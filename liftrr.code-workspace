@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"name": "liftrr",
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"print": "cpp",
+			"vector": "cpp"
+		}
+	}
+}
