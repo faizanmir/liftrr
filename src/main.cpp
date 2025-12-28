@@ -25,6 +25,7 @@ struct ModeApplier : liftrr::ble::IModeApplier {
     if (strcmp(mode, "RUN") == 0) deviceMode = MODE_RUN;
     else if (strcmp(mode, "IDLE") == 0) deviceMode = MODE_IDLE;
     else if (strcmp(mode, "DUMP") == 0) deviceMode = MODE_DUMP;
+    else if (strcmp(mode, "CALIBRATE") == 0) deviceMode = MODE_CALIBRATE;
   }
 
 private:
@@ -63,19 +64,19 @@ void setup() {
   Serial.println("I2C Bus Initialized");
   delay(100);
 
+  //2 Sensors
   sensorsInit();
-  // 2. Display
+ 
+  // 3. Display
   initDisplay();
-
-  // 3. Sensors
 
   // 4. SD card
   storageInitSd();
 
-  // 6. Motion state
+  // 5. Motion state
   liftrr::app::initMotionState(gMotionState, millis());
 
-  // 7. Storage Indicators
+  // 6. Storage Indicators
   defineStorageIndicators();
 
   // 8. BLE
@@ -83,7 +84,6 @@ void setup() {
   liftrr::ble::bleAppSetModeApplier(&gModeApplier);
 
   Serial.println("--- SETUP COMPLETE ---");
-  delay(500);
 }
 
 void loop() {
@@ -91,6 +91,10 @@ void loop() {
   liftrr::ble::bleAppLoop(); // BLE periodic work
 
   unsigned long currentMillis = millis();
+  int64_t sessionTimestampMs = liftrr::currentEpochMs();
+  if (sessionTimestampMs <= 0) {
+    sessionTimestampMs = (int64_t)currentMillis;
+  }
 
   // --- MODE_DUMP: dedicated screen, no sensing/logging ---
   if (deviceMode == MODE_DUMP) {
@@ -116,7 +120,7 @@ void loop() {
 
   //-- 4. SD logging: only in RUN mode with an active session ---
     if (deviceMode == MODE_RUN && storageIsSessionActive() && isCalibrated && laserValid) {
-        storageLogSample(currentMillis,
+        storageLogSample(sessionTimestampMs,
                          sample.rawDist,
                          pose.relDist,
                          pose.relRoll,
@@ -135,8 +139,8 @@ void loop() {
     if (deviceMode == MODE_IDLE) {
       liftrr::app::renderIdleScreen();
     } else {
-      // MODE_RUNb
-      if (!isCalibrated || !laserValid) {
+      // MODE_RUN or MODE_CALIBRATE
+      if (deviceMode == MODE_CALIBRATE || !laserValid) {
         liftrr::app::renderCalibrationOrWarmupScreen(sample);
       } else {
         liftrr::app::renderTrackingScreen(pose);

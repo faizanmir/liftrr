@@ -23,5 +23,6 @@ const long AUTO_DUMP_INTERVAL = 100000; // 100s Auto-Dump Timer
 enum DeviceMode {
   MODE_RUN,   // sensing + logging
   MODE_DUMP ,
-  MODE_IDLE
+  MODE_IDLE, 
+  MODE_CALIBRATE
 };

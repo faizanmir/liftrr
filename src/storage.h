@@ -9,7 +9,7 @@ bool storageStartSession(const String& sessionId,
                          float calibPitchOffset,
                          float calibYawOffset);
 
-bool storageLogSample(uint32_t timestampMs,
+bool storageLogSample(int64_t timestampMs,
                       int16_t distMm,
                       int16_t relDistMm,
                       float rollDeg,

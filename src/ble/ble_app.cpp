@@ -68,15 +68,6 @@ static AppBleCallbacks gBleCallbacks(liftrr::gBleManager);
 // If RTC is not available, we fall back to mapping phone epoch -> device millis.
 // NOTE: millis() wraps around ~49.7 days (uint32_t), so epoch mapping is preferred.
 
-static int64_t  gEpochAtSyncMs  = 0;
-static uint32_t gMillisAtSyncMs = 0;
-
-static int64_t currentEpochMs() {
-    if (gEpochAtSyncMs <= 0) return 0;
-    uint32_t now = millis();
-    return gEpochAtSyncMs + (int64_t)(now - gMillisAtSyncMs);
-}
-
 // ======================================================
 //  Pending session start (auto-start after calibration)
 // ======================================================
@@ -117,7 +108,7 @@ static void sendBleResp(
     StaticJsonDocument<1024> resp;
     resp["v"]    = 1;
     resp["id"]   = String(millis());
-    int64_t epoch = currentEpochMs();
+    int64_t epoch = liftrr::currentEpochMs();
     resp["ts"]   = (epoch > 0) ? epoch : (int64_t)millis();
     resp["src"]  = "device";
     resp["dst"]  = "phone";
@@ -145,7 +136,7 @@ static void sendBleEvt(
     StaticJsonDocument<384> evt;
     evt["v"]    = 1;
     evt["id"]   = String(millis());
-    int64_t epoch = currentEpochMs();
+    int64_t epoch = liftrr::currentEpochMs();
     evt["ts"]   = (epoch > 0) ? epoch : (int64_t)millis();
     evt["src"]  = "device";
     evt["dst"]  = "phone";
@@ -299,7 +290,7 @@ static void handleBleCommand(const std::string &raw) {
     if (equalsIgnoreCase(name, "ping")) {
         sendBleResp("ping", ref, true, "OK", "", [&](JsonObject out) {
             out["uptimeMs"] = (uint32_t)millis();
-            out["epochMs"]  = currentEpochMs();
+            out["epochMs"]  = liftrr::currentEpochMs();
             out["fw"]       = "dev";
         });
         return;
@@ -338,18 +329,17 @@ static void handleBleCommand(const std::string &raw) {
             return;
         }
 
-        gEpochAtSyncMs  = phoneEpoch;
-        gMillisAtSyncMs = millis();
+        liftrr::timeSyncSetEpochMs(phoneEpoch);
     
 
         sendBleResp("time.sync", ref, true, "OK", "", [&](JsonObject out) {
-            out["epochAtSyncMs"]  = gEpochAtSyncMs;
-            out["millisAtSyncMs"] = gMillisAtSyncMs;
+            out["epochAtSyncMs"]  = liftrr::timeSyncEpochMs();
+            out["millisAtSyncMs"] = liftrr::timeSyncMillisMs();
         });
         return;
     }
 
-    // mode.set body: { mode: "RUN"|"IDLE"|"DUMP" }
+    // mode.set body: { mode: "RUN"|"IDLE"|"DUMP|CALIBRATE" }
     // This updates the global deviceMode used elsewhere in the firmware.
     if (equalsIgnoreCase(name, "mode.set")) {
         String modeStr = String(readStr(body, doc, "mode", ""));
@@ -374,6 +364,8 @@ static void handleBleCommand(const std::string &raw) {
             deviceMode = MODE_IDLE;
         } else if (modeStr.equalsIgnoreCase("DUMP")) {
             deviceMode = MODE_DUMP;
+        } else if (modeStr.equalsIgnoreCase("CALIBRATE")) {
+            deviceMode = MODE_CALIBRATE;
         }
 
         sendBleResp("mode.set", ref, true, "OK", "", [&](JsonObject out) {
@@ -404,7 +396,7 @@ static void handleBleCommand(const std::string &raw) {
         String sid;
         if (sidC && sidC[0] != '\0') sid = String(sidC);
         else {
-            int64_t e = currentEpochMs();
+            int64_t e = liftrr::currentEpochMs();
             sid = (e > 0) ? String((long long)e) : String(millis());
         }
 

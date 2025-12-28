@@ -50,21 +50,6 @@ void sensorsRead(SensorSample &sample)
 
     uint8_t s = 0, g = 0, a = 0, m = 0;
     bno.getCalibration(&s, &g, &a, &m);
-
-    // Print occasionally (non-blocking) so we don't starve other work.
-    static unsigned long lastPrintMs = 0;
-    unsigned long now = millis();
-    if (now - lastPrintMs >= 250) {
-        Serial.print("IMU Ori X:"); Serial.print(event.orientation.x, 2);
-        Serial.print(" Y:");        Serial.print(event.orientation.y, 2);
-        Serial.print(" Z:");        Serial.print(event.orientation.z, 2);
-        Serial.print(" | Calib S:"); Serial.print(s);
-        Serial.print(" G:");        Serial.print(g);
-        Serial.print(" A:");        Serial.print(a);
-        Serial.print(" M:");        Serial.println(m);
-        lastPrintMs = now;
-    }
-
     sample.event = event;
     sample.s = s;
     sample.g = g;

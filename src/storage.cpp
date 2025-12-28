@@ -139,13 +139,13 @@ bool storageStartSession(const String& sessionId,
 
 // Append a single sample to the active session file.
 //
-// timestampMs : millis() at sample time
+// timestampMs : epoch ms if synced, otherwise millis() at sample time
 // distMm      : raw distance from sensor (mm)
 // relDistMm   : distance minus calibration offset (mm)
 // rollDeg     : relative roll (deg)
 // pitchDeg    : relative pitch (deg)
 // yawDeg      : relative yaw (deg)
-bool storageLogSample(uint32_t timestampMs,
+bool storageLogSample(int64_t timestampMs,
                       int16_t distMm,
                       int16_t relDistMm,
                       float rollDeg,
@@ -154,7 +154,7 @@ bool storageLogSample(uint32_t timestampMs,
     if (!sessionActive || !sessionFile) return false;
     if (!sdReady) return false;
     pulseSDCardLED();
-    sessionFile.print(timestampMs);
+    sessionFile.print((long long)timestampMs);
     sessionFile.print(",");
     sessionFile.print(distMm);
     sessionFile.print(",");

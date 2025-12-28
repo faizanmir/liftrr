@@ -22,9 +22,11 @@ void enforceCalibrationModeGuard(bool isCalibrated, bool laserValid,
                                  DeviceMode &deviceMode) {
   if (deviceMode == MODE_RUN) {
     if (!isCalibrated) {
-      // lost calibration in run mode -> switch to IDLE or handle gracefully?
-      // For now, let's auto-switch to IDLE to force user to recalibrate/wait
-      deviceMode = MODE_IDLE;
+      deviceMode = MODE_CALIBRATE;
+    }
+  } else if (deviceMode == MODE_CALIBRATE) {
+    if (isCalibrated && laserValid) {
+      deviceMode = MODE_RUN;
     }
   }
 }

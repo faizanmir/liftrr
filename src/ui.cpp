@@ -50,8 +50,7 @@ void drawStatusBar(bool recording) {
     display.setTextColor(SSD1306_WHITE);
 }
 
-// FIXED: Center-Zero Vertical Bar
-// Handles both positive (Up) and negative (Down) movement
+
 void drawVerticalBar(int16_t currentVal) {
     int x = 118;
     int y = 14;

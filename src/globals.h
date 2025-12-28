@@ -21,6 +21,8 @@ extern Adafruit_VL53L1X laser;
 extern unsigned long lastScreenUpdate;
 extern unsigned long lastLogTime;
 extern unsigned long lastAutoDumpTime;
+extern int64_t gEpochAtSyncMs;
+extern uint32_t gMillisAtSyncMs;
 
 // State
 extern bool isCalibrated;

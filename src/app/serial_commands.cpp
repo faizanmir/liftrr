@@ -3,6 +3,7 @@
 #include "globals.h"
 #include "storage.h"
 #include "sensors.h"
+#include "rtc.h"
 #include <SD.h>
 
 namespace liftrr {
@@ -33,7 +34,8 @@ void handleSerialCommands(MotionState &motionState) {
 
         case 's': {
             // Start a session with a simple auto-generated ID
-            String sid = String(millis());
+            int64_t epoch = liftrr::currentEpochMs();
+            String sid = (epoch > 0) ? String((long long)epoch) : String(millis());
             if (storageIsSessionActive()) {
                 Serial.println("Session already active, cannot start new one.");
                 break;
