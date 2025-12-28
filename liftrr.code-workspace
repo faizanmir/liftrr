@@ -8,7 +8,11 @@
 	"settings": {
 		"files.associations": {
 			"print": "cpp",
-			"vector": "cpp"
+			"vector": "cpp",
+			"algorithm": "cpp",
+			"iterator": "cpp",
+			"random": "cpp",
+			"functional": "cpp"
 		}
 	}
 }

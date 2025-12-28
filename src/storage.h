@@ -1,32 +1,33 @@
-#pragma once
+bool storageInitSd();
 
-#include <stdint.h>
-#include <stddef.h>
-#include "globals.h"
+bool storageIsSessionActive();
 
-// Single sample of lift data
-struct LiftSample {
-  uint32_t t;     // time in ms
-  int16_t  dist;  // distance in mm (relative)
-  float    roll;  // degrees
-  float    pitch; // degrees
-  float    yaw;   // degrees
-};
+bool storageStartSession(const String& sessionId,
+                         const String& exercise,
+                         int16_t calibLaserOffset,
+                         float calibRollOffset,
+                         float calibPitchOffset,
+                         float calibYawOffset);
 
-// --- Flash lifecycle ---
-// Initialise flash and restore or create log header
-bool initFlashStorage();
-// Erase header + log region and reset write pointer
-bool flashFactoryReset();
+bool storageLogSample(uint32_t timestampMs,
+                      int16_t distMm,
+                      int16_t relDistMm,
+                      float rollDeg,
+                      float pitchDeg,
+                      float yawDeg);
 
-// --- Logging primitives ---
-// Append raw bytes to the log region
-bool flashAppend(const void* data, size_t len);
-// Log a LiftSample as a CSV line: t,dist,roll,pitch,yaw
-bool logLiftSampleCsv(const LiftSample& sample);
-// Simple helper for logging a CSV line from current globals
-bool writeDummySampleToFlash();
+bool storageEndSession();
 
-// --- Reading utilities ---
-// Read back a raw chunk from the log region
-bool readLogChunk(uint32_t addr, uint8_t* buf, size_t len);
+typedef bool (*StorageSessionIndexCallback)(const char *name,
+                                            uint32_t size,
+                                            uint64_t mtimeMs,
+                                            size_t lineIndex,
+                                            void *ctx);
+bool storageReadSessionIndex(size_t cursor,
+                             size_t maxItems,
+                             size_t *nextCursor,
+                             bool *hasMore,
+                             StorageSessionIndexCallback cb,
+                             void *ctx);
+
+bool storageRebuildSessionIndex(size_t *outCount);

@@ -41,8 +41,7 @@ void drawStatusBar(bool recording) {
     else display.print(recording ? "REC" : "LIVE");
 
     display.setCursor(50, 1);
-    if (flashReady) display.print("SD:OK");
-    else display.print("SD:--");
+    display.print("SD:--");
 
     if ((millis() / 500) % 2 == 0) {
         display.fillCircle(122, 4, 2, SSD1306_BLACK);

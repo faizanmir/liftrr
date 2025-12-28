@@ -8,7 +8,10 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "config.h"
+#include "ble/ble.h"
 
+// Forward declarations to avoid circular includes.
+// globals.h is included by many .cpp files, so it should stay lightweight.
 // --- EXTERNAL OBJECTS ---
 extern Adafruit_SSD1306 display;
 extern Adafruit_BNO055 bno;
@@ -21,7 +24,6 @@ extern unsigned long lastAutoDumpTime;
 
 // State
 extern bool isCalibrated;
-extern bool flashReady;
 
 // Data
 extern int16_t distance;
@@ -36,3 +38,9 @@ extern float yawOffset;
 // Button
 extern int lastBtnState;
 extern unsigned long btnPressTime;
+
+extern DeviceMode deviceMode;
+
+namespace liftrr {
+extern ble::BleManager gBleManager; // Global BLE manager instance (defined exactly once in globals.cpp)
+} // namespace liftrr

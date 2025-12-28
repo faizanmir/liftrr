@@ -1,339 +1,366 @@
+
 #include <Arduino.h>
-#include <SPI.h>
+#include <SD.h>
+#include <ArduinoJson.h>
 
 #include "globals.h"
 #include "storage.h"
+#include "storage_indicators.h"
 
-// ==============================
-//  W25Qxx low-level definitions
-// ==============================
+// ======================================================
+//  SD CARD - SESSION LOGGING (APP-CONTROLLED)
+// ======================================================
+//
+// This module is ONLY responsible for logging data to the SD card.
+// Calibration is assumed to be handled elsewhere (e.g. stored in SPI flash),
+// but we still accept calibration offsets as parameters so they can be written
+// into the session header for traceability.
+//
 
-static const uint8_t W25_CMD_READ_DATA       = 0x03;
-static const uint8_t W25_CMD_PAGE_PROGRAM    = 0x02;
-static const uint8_t W25_CMD_SECTOR_ERASE_4K = 0x20;
-static const uint8_t W25_CMD_READ_STATUS1    = 0x05;
-static const uint8_t W25_CMD_WRITE_ENABLE    = 0x06;
-static const uint8_t W25_CMD_READ_JEDEC_ID   = 0x9F;
+static bool   sdReady              = false;
+static bool   sessionActive        = false;
+static File   sessionFile;
+static String currentSessionId;
+static unsigned long lastSdFlushMs = 0;
 
-static const uint32_t W25_SECTOR_SIZE  = 4096;
-static const uint32_t W25_PAGE_SIZE    = 256;
+static const unsigned long SD_FLUSH_INTERVAL_MS = 1000; // 1s
+static const char *const SESSION_INDEX_PATH = "/sessions/index.ndjson";
+static const char *const SESSIONS_DIR_PATH = "/sessions";
 
-// Log region configuration: start at 0, use first 64 KiB
-static const uint32_t LOG_REGION_START = 0x000000;
-static const uint32_t LOG_REGION_SIZE  = 64 * 1024; // 64KB for CSV text
-
-// Current write pointer in log region
-static uint32_t flashWriteAddr = LOG_REGION_START;
-
-// ==============================
-//  Chip select helpers
-// ==============================
-
-static inline void w25Select() {
-  digitalWrite(FLASH_CS, LOW);
+static File openForAppend(const char *path) {
+    // Many SD stacks don't define FILE_APPEND; FILE_WRITE typically appends.
+    File f = SD.open(path, FILE_WRITE);
+    if (f) {
+        f.seek(f.size());
+    }
+    return f;
 }
 
-static inline void w25Deselect() {
-  digitalWrite(FLASH_CS, HIGH);
+static String basenameFromPath(const String &path) {
+    int slash = path.lastIndexOf('/');
+    if (slash < 0) return path;
+    return path.substring(slash + 1);
 }
 
-// ==============================
-//  Low-level SPI helpers
-// ==============================
-
-static uint8_t w25ReadStatus1() {
-  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
-  w25Select();
-  SPI.transfer(W25_CMD_READ_STATUS1);
-  uint8_t status = SPI.transfer(0x00);
-  w25Deselect();
-  SPI.endTransaction();
-  return status;
+static uint64_t fileMtimeMs(File &) {
+    // NOTE: Not all Arduino SD / FS implementations expose a reliable mtime API.
+    // Keeping this portable avoids build breaks across cores/libraries.
+    return 0;
 }
 
-static void w25WaitBusy() {
-  // BUSY bit = bit0 in status1
-  while (w25ReadStatus1() & 0x01) {
-    delay(1);
-  }
-}
+// Initialize SD card. Uses SD_CS defined in globals.h.
+// Returns true on success.
+bool storageInitSd() {
+    if (sdReady) return true;
 
-static void w25WriteEnable() {
-  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
-  w25Select();
-  SPI.transfer(W25_CMD_WRITE_ENABLE);
-  w25Deselect();
-  SPI.endTransaction();
-}
-
-static void w25ReadJedecID(uint8_t &manuf, uint8_t &memType, uint8_t &capacity) {
-  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
-  w25Select();
-  SPI.transfer(W25_CMD_READ_JEDEC_ID);
-  manuf    = SPI.transfer(0x00);
-  memType  = SPI.transfer(0x00);
-  capacity = SPI.transfer(0x00);
-  w25Deselect();
-  SPI.endTransaction();
-}
-
-static void w25SectorErase(uint32_t addr) {
-  // addr must be 4K aligned
-  w25WriteEnable();
-  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
-  w25Select();
-  SPI.transfer(W25_CMD_SECTOR_ERASE_4K);
-  SPI.transfer((addr >> 16) & 0xFF);
-  SPI.transfer((addr >> 8)  & 0xFF);
-  SPI.transfer((addr >> 0)  & 0xFF);
-  w25Deselect();
-  SPI.endTransaction();
-  w25WaitBusy();
-}
-
-static void w25PageProgram(uint32_t addr, const uint8_t *data, size_t len) {
-  if (len == 0 || len > W25_PAGE_SIZE) return;
-
-  w25WriteEnable();
-  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
-  w25Select();
-  SPI.transfer(W25_CMD_PAGE_PROGRAM);
-  SPI.transfer((addr >> 16) & 0xFF);
-  SPI.transfer((addr >> 8)  & 0xFF);
-  SPI.transfer((addr >> 0)  & 0xFF);
-
-  for (size_t i = 0; i < len; i++) {
-    SPI.transfer(data[i]);
-  }
-
-  w25Deselect();
-  SPI.endTransaction();
-  w25WaitBusy();
-}
-
-static void w25ReadData(uint32_t addr, uint8_t *buf, size_t len) {
-  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
-  w25Select();
-  SPI.transfer(W25_CMD_READ_DATA);
-  SPI.transfer((addr >> 16) & 0xFF);
-  SPI.transfer((addr >> 8)  & 0xFF);
-  SPI.transfer((addr >> 0)  & 0xFF);
-
-  for (size_t i = 0; i < len; i++) {
-    buf[i] = SPI.transfer(0x00);
-  }
-
-  w25Deselect();
-  SPI.endTransaction();
-}
-
-// Multi-page program helper: splits writes across page boundaries
-static void w25WriteBuffer(uint32_t addr, const uint8_t *data, size_t len) {
-  while (len > 0) {
-    uint32_t pageOffset   = addr % W25_PAGE_SIZE;
-    uint32_t spaceInPage  = W25_PAGE_SIZE - pageOffset;
-    size_t   chunk        = (len < spaceInPage) ? len : spaceInPage;
-
-    w25PageProgram(addr, data, chunk);
-
-    addr += chunk;
-    data += chunk;
-    len  -= chunk;
-  }
-}
-
-// ==============================
-//  Log region management
-// ==============================
-
-// Scan log region to find first 0xFF (erased byte) as append point.
-// Assumes region was fully erased before first use and that we only write ASCII CSV.
-static void findWritePointer() {
-  uint8_t buf[64];
-  flashWriteAddr = LOG_REGION_START;
-
-  for (uint32_t addr = LOG_REGION_START; addr < LOG_REGION_START + LOG_REGION_SIZE; addr += sizeof(buf)) {
-    size_t blockSize = sizeof(buf);
-    if (addr + blockSize > LOG_REGION_START + LOG_REGION_SIZE) {
-      blockSize = (LOG_REGION_START + LOG_REGION_SIZE) - addr;
+    if (!SD.begin(SD_CS)) {
+        Serial.println("SD init failed");
+        sdReady = false;
+        return false;
     }
 
-    w25ReadData(addr, buf, blockSize);
+    // Ensure sessions directory exists
+    SD.mkdir(SESSIONS_DIR_PATH);
 
-    bool allFF = true;
-    for (size_t i = 0; i < blockSize; i++) {
-      if (buf[i] != 0xFF) {
-        allFF = false;
-      } else {
-        // First erased byte: this is our append point
-        flashWriteAddr = addr + i;
-        return;
-      }
-    }
-
-    if (allFF) {
-      // This whole block is empty, use its start as append point
-      flashWriteAddr = addr;
-      return;
-    }
-  }
-
-  // Region full
-  flashWriteAddr = LOG_REGION_START + LOG_REGION_SIZE;
-}
-
-// ==============================
-//  Lifecycle
-// ==============================
-
-bool initFlashStorage() {
-  Serial.println("Init external flash (raw W25Qxx CSV logger)...");
-
-  pinMode(FLASH_CS, OUTPUT);
-  w25Deselect();
-
-  // Init SPI bus for flash
-  SPI.begin(FLASH_SCK, FLASH_MISO, FLASH_MOSI, FLASH_CS);
-
-  uint8_t manuf, memType, capacity;
-  w25ReadJedecID(manuf, memType, capacity);
-  Serial.print("JEDEC ID: 0x");
-  Serial.print(manuf, HEX);
-  Serial.print(" 0x");
-  Serial.print(memType, HEX);
-  Serial.print(" 0x");
-  Serial.println(capacity, HEX);
-
-  // Determine current write pointer by scanning region
-  findWritePointer();
-
-  Serial.print("Log region start: 0x");
-  Serial.print(LOG_REGION_START, HEX);
-  Serial.print(" size: ");
-  Serial.print(LOG_REGION_SIZE);
-  Serial.print(" bytes, next write at 0x");
-  Serial.println(flashWriteAddr, HEX);
-
-  flashReady = true;
-  return true;
-}
-
-bool flashFactoryReset() {
-  Serial.println("FLASH FACTORY RESET: erasing log region...");
-
-  pinMode(FLASH_CS, OUTPUT);
-  w25Deselect();
-  SPI.begin(FLASH_SCK, FLASH_MISO, FLASH_MOSI, FLASH_CS);
-
-  // Erase all sectors in log region
-  for (uint32_t addr = LOG_REGION_START; addr < LOG_REGION_START + LOG_REGION_SIZE; addr += W25_SECTOR_SIZE) {
-    Serial.print("Erasing sector at 0x");
-    Serial.println(addr, HEX);
-    w25SectorErase(addr);
-  }
-
-  flashWriteAddr = LOG_REGION_START;
-  flashReady = true;
-  Serial.println("Factory reset complete. Log region cleared.");
-  return true;
-}
-
-// ==============================
-//  Logging primitives
-// ==============================
-
-bool flashAppend(const void* data, size_t len) {
-  if (!flashReady && !initFlashStorage()) {
-    Serial.println("flashAppend: flash not ready.");
-    return false;
-  }
-
-  if (len == 0) {
-    Serial.println("flashAppend: zero-length write, nothing to do.");
+    sdReady = true;
+    Serial.println("SD init OK");
     return true;
-  }
-
-  if (flashWriteAddr + len > LOG_REGION_START + LOG_REGION_SIZE) {
-    Serial.println("flashAppend: log region full, cannot append.");
-    return false;
-  }
-
-  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
-  w25WriteBuffer(flashWriteAddr, bytes, len);
-
-  Serial.print("flashAppend: wrote ");
-  Serial.print(len);
-  Serial.print(" bytes at addr 0x");
-  Serial.println(flashWriteAddr, HEX);
-
-  flashWriteAddr += len;
-  return true;
 }
 
-bool logLiftSampleCsv(const LiftSample& sample) {
-  // Build CSV line: t_ms,dist_mm,roll_deg,pitch_deg,yaw_deg\n
-  char line[128];
-  int n = snprintf(
-    line,
-    sizeof(line),
-    "%lu,%d,%.2f,%.2f,%.2f\n",
-    static_cast<unsigned long>(sample.t),
-    static_cast<int>(sample.dist),
-    sample.roll,
-    sample.pitch,
-    sample.yaw
-  );
-
-  if (n <= 0) {
-    Serial.println("logLiftSampleCsv: Failed to format CSV line.");
-    return false;
-  }
-  if (n >= (int)sizeof(line)) {
-    Serial.println("logLiftSampleCsv: CSV line truncated.");
-    n = sizeof(line) - 1;
-    line[n] = '\n';
-  }
-
-  return flashAppend(line, (size_t)n);
+// Returns true if a session is currently active.
+bool storageIsSessionActive() {
+    return sessionActive;
 }
 
-bool writeDummySampleToFlash() {
-  if (!flashReady && !initFlashStorage()) {
-    Serial.println("writeDummySampleToFlash: flash not ready.");
-    return false;
-  }
+// Start a new session log file on SD.
+//
+// sessionId:  unique ID generated by the app (also used as base filename).
+// exercise:   optional exercise name string ("deadlift", "squat", etc.).
+// calib*  :   calibration offsets at the time of session start (for metadata only).
+//
+// The file is created as: /sessions/<sessionId>.tmp
+// and will be renamed to .csv when storageEndSession() is called.
+bool storageStartSession(const String& sessionId,
+                         const String& exercise,
+                         int16_t calibLaserOffset,
+                         float calibRollOffset,
+                         float calibPitchOffset,
+                         float calibYawOffset) {
+                    pulseSDCardLED();
+    if (sessionActive) {
+        Serial.println("storageStartSession: session already active.");
+        return false;
+    }
 
-  LiftSample s;
-  s.t     = millis();
-  s.dist  = distance;
-  s.roll  = rollOffset;
-  s.pitch = pitchOffset;
-  s.yaw   = yawOffset;
+    if (!storageInitSd()) {
+        return false;
+    }
 
-  if (!logLiftSampleCsv(s)) {
-    Serial.println("writeDummySampleToFlash: logLiftSampleCsv FAILED.");
-    return false;
-  }
+    currentSessionId = sessionId;
 
-  Serial.println("writeDummySampleToFlash: CSV line logged.");
-  return true;
+    String dir = SESSIONS_DIR_PATH;
+    SD.mkdir(dir);
+
+    if (!SD.exists(SESSION_INDEX_PATH)) {
+        File idx = SD.open(SESSION_INDEX_PATH, FILE_WRITE);
+        if (idx) idx.close();
+    }
+
+    String tmpPath = dir + "/" + sessionId + ".tmp";
+
+    sessionFile = SD.open(tmpPath, FILE_WRITE);
+    if (!sessionFile) {
+        Serial.print("storageStartSession: failed to open ");
+        Serial.println(tmpPath);
+        currentSessionId = "";
+        return false;
+    }
+
+    // Basic header (comment lines starting with '#')
+    sessionFile.println("# liftrr session");
+    sessionFile.print("# session_id="); sessionFile.println(sessionId);
+    sessionFile.print("# exercise=");   sessionFile.println(exercise);
+    sessionFile.print("# calib_laserOffset="); sessionFile.println(calibLaserOffset);
+    sessionFile.print("# calib_rollOffset=");  sessionFile.println(calibRollOffset);
+    sessionFile.print("# calib_pitchOffset="); sessionFile.println(calibPitchOffset);
+    sessionFile.print("# calib_yawOffset=");   sessionFile.println(calibYawOffset);
+
+    // CSV header
+    sessionFile.println("timestamp_ms,dist_mm,relDist_mm,roll_deg,pitch_deg,yaw_deg");
+    sessionFile.flush();
+    sessionActive   = true;
+    lastSdFlushMs   = millis();
+
+    Serial.print("Session started: ");
+    Serial.println(tmpPath);
+     pulseSDCardLED();
+    return true;
 }
 
-// ==============================
-//  Reading utilities
-// ==============================
+// Append a single sample to the active session file.
+//
+// timestampMs : millis() at sample time
+// distMm      : raw distance from sensor (mm)
+// relDistMm   : distance minus calibration offset (mm)
+// rollDeg     : relative roll (deg)
+// pitchDeg    : relative pitch (deg)
+// yawDeg      : relative yaw (deg)
+bool storageLogSample(uint32_t timestampMs,
+                      int16_t distMm,
+                      int16_t relDistMm,
+                      float rollDeg,
+                      float pitchDeg,
+                      float yawDeg) {
+    if (!sessionActive || !sessionFile) return false;
+    if (!sdReady) return false;
+    pulseSDCardLED();
+    sessionFile.print(timestampMs);
+    sessionFile.print(",");
+    sessionFile.print(distMm);
+    sessionFile.print(",");
+    sessionFile.print(relDistMm);
+    sessionFile.print(",");
+    sessionFile.print(rollDeg, 3);
+    sessionFile.print(",");
+    sessionFile.print(pitchDeg, 3);
+    sessionFile.print(",");
+    sessionFile.println(yawDeg, 3);
 
-bool readLogChunk(uint32_t addr, uint8_t* buf, size_t len) {
-  if (!flashReady && !initFlashStorage()) {
-    Serial.println("readLogChunk: flash not ready.");
-    return false;
-  }
+    unsigned long now = millis();
+    if (now - lastSdFlushMs > SD_FLUSH_INTERVAL_MS) {
+        sessionFile.flush();
+        lastSdFlushMs = now;
+    }
+    pulseSDCardLED();
 
-  if (addr + len > LOG_REGION_SIZE) {
-    Serial.println("readLogChunk: request out of bounds.");
-    return false;
-  }
+    return true;
+}
 
-  w25ReadData(LOG_REGION_START + addr, buf, len);
-  return true;
+// Finalize the current session:
+//
+// - Flushes & closes the .tmp file
+// - Renames it to .csv
+//
+// After this call, storageIsSessionActive() will return false.
+bool storageEndSession() {
+     pulseSDCardLED();
+    if (!sessionActive) {
+        Serial.println("storageEndSession: no active session.");
+        return false;
+    }
+
+    if (!sdReady) {
+        sessionActive = false;
+        currentSessionId = "";
+        return false;
+    }
+
+    if (sessionFile) {
+        sessionFile.flush();
+        sessionFile.close();
+    }
+
+    String dir = "/sessions";
+    String tmpPath   = dir + "/" + currentSessionId + ".tmp";
+    String finalPath = dir + "/" + currentSessionId + ".csv";
+
+    // Try to rename; if it fails, we at least logged to the tmp file.
+    if (SD.exists(tmpPath)) {
+        if (!SD.rename(tmpPath, finalPath)) {
+            Serial.println("storageEndSession: rename failed, leaving .tmp file.");
+        } else {
+            Serial.print("Session finalized: ");
+            Serial.println(finalPath);
+        }
+    }
+
+    String indexPath;
+    if (SD.exists(finalPath)) indexPath = finalPath;
+    else if (SD.exists(tmpPath)) indexPath = tmpPath;
+
+    if (indexPath.length()) {
+        File f = SD.open(indexPath, FILE_READ);
+        if (f) {
+            uint32_t size = f.size();
+            uint64_t mtimeMs = fileMtimeMs(f);
+            String name = basenameFromPath(indexPath);
+            f.close();
+            File idx = openForAppend(SESSION_INDEX_PATH);
+            if (idx) {
+                idx.print("{\"name\":\"");
+                idx.print(name);
+                idx.print("\",\"size\":");
+                idx.print(size);
+                idx.print(",\"mtime\":");
+                idx.print((unsigned long long)mtimeMs);
+                idx.println("}");
+                idx.close();
+            } else {
+                Serial.println("storageEndSession: unable to append to index.");
+            }
+        }
+    }
+
+    sessionActive = false;
+    currentSessionId = "";
+    pulseSDCardLED();
+    return true;
+}
+
+bool storageReadSessionIndex(size_t cursor,
+                             size_t maxItems,
+                             size_t *nextCursor,
+                             bool *hasMore,
+                             StorageSessionIndexCallback cb,
+                             void *ctx) {
+    if (nextCursor) *nextCursor = cursor;
+    if (hasMore) *hasMore = false;
+    if (!cb) return false;
+    if (!storageInitSd()) return false;
+
+    if (!SD.exists(SESSION_INDEX_PATH)) {
+        return false;
+    } 
+
+    File idx = SD.open(SESSION_INDEX_PATH, FILE_READ);
+    if (!idx) return false;
+
+    size_t lineIndex = 0;
+    size_t count = 0;
+    size_t lastIncludedLine = cursor;
+
+    while (idx.available()) {
+        String line = idx.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) {
+            lineIndex++;
+            continue;
+        }
+        if (lineIndex < cursor) {
+            lineIndex++;
+            continue;
+        }
+
+        if (count >= maxItems) {
+            if (hasMore) *hasMore = true;
+            break;
+        }
+
+        StaticJsonDocument<256> doc;
+        DeserializationError err = deserializeJson(doc, line);
+        if (err) {
+            // Skip malformed lines but still advance the cursor so we don't loop forever.
+            lastIncludedLine = lineIndex + 1;
+            lineIndex++;
+            continue;
+        }
+
+        const char *name = doc["name"] | "";
+        uint32_t size = doc["size"] | 0;
+        uint64_t mtimeMs = doc["mtime"] | (uint64_t)0;
+
+        if (name[0] != '\0') {
+            bool keepGoing = cb(name, size, mtimeMs, lineIndex, ctx);
+            if (!keepGoing) {
+                if (hasMore) *hasMore = true;
+                break;
+            }
+            lastIncludedLine = lineIndex + 1;
+            count++;
+        }
+
+        lineIndex++;
+    }
+
+    idx.close();
+    if (nextCursor) *nextCursor = lastIncludedLine;
+    return true;
+}
+
+bool storageRebuildSessionIndex(size_t *outCount) {
+    if (outCount) *outCount = 0;
+    if (!storageInitSd()) return false;
+
+    File dir = SD.open(SESSIONS_DIR_PATH);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        return false;
+    }
+
+    File idx = SD.open(SESSION_INDEX_PATH, FILE_WRITE);
+    if (!idx) {
+        dir.close();
+        return false;
+    }
+
+    size_t count = 0;
+    File entry = dir.openNextFile();
+    while (entry) {
+        if (!entry.isDirectory()) {
+            const char *rawName = entry.name();
+            String baseName = basenameFromPath(String(rawName));
+            if (baseName != "index.ndjson") {
+                bool isSessionFile = baseName.endsWith(".csv") || baseName.endsWith(".tmp");
+                if (isSessionFile) {
+                    uint32_t size = entry.size();
+                    uint64_t mtimeMs = fileMtimeMs(entry);
+                    idx.print("{\"name\":\"");
+                    idx.print(baseName);
+                    idx.print("\",\"size\":");
+                    idx.print(size);
+                    idx.print(",\"mtime\":");
+                    idx.print((unsigned long long)mtimeMs);
+                    idx.println("}");
+                    count++;
+                }
+            }
+        }
+        entry.close();
+        entry = dir.openNextFile();
+    }
+
+    idx.close();
+    dir.close();
+    if (outCount) *outCount = count;
+    return true;
 }
