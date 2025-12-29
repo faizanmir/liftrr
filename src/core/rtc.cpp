@@ -1,9 +1,10 @@
-#include "rtc.h"
+#include "core/rtc.h"
+
+namespace liftrr {
+namespace core {
 
 int64_t gEpochAtSyncMs = 0;
 uint32_t gMillisAtSyncMs = 0;
-
-namespace liftrr {
 
 int64_t currentEpochMs() {
     if (gEpochAtSyncMs <= 0) return 0;
@@ -28,4 +29,5 @@ bool timeSyncIsValid() {
     return gEpochAtSyncMs > 0;
 }
 
+} // namespace core
 } // namespace liftrr

@@ -1,8 +1,8 @@
 #pragma once
 
 #include <Arduino.h>
-#include "config.h"
-#include "sensors.h"
+#include "core/config.h"
+#include "sensors/sensors.h"
 
 namespace liftrr {
 namespace app {
@@ -16,12 +16,14 @@ struct MotionState {
 };
 
 void initMotionState(MotionState &state, unsigned long nowMs);
-void updateCalibrationFlags(const SensorSample &sample, bool &isCalibrated);
-void enforceCalibrationModeGuard(bool isCalibrated, bool laserValid, DeviceMode &deviceMode);
-void updateMotionAndMode(const RelativePose &pose,
+void updateCalibrationFlags(const liftrr::sensors::SensorSample &sample, bool &isCalibrated);
+void enforceCalibrationModeGuard(bool isCalibrated,
+                                 bool laserValid,
+                                 liftrr::core::DeviceMode &deviceMode);
+void updateMotionAndMode(const liftrr::sensors::RelativePose &pose,
                          unsigned long nowMs,
                          MotionState &state,
-                         DeviceMode &deviceMode,
+                         liftrr::core::DeviceMode &deviceMode,
                          bool isCalibrated,
                          bool laserValid);
 

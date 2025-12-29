@@ -1,5 +1,8 @@
 #pragma once
-#include "globals.h"
+#include "core/globals.h"
+
+namespace liftrr {
+namespace ui {
 
 extern const unsigned char checkmark[];
 
@@ -8,3 +11,6 @@ void drawTiltGauge(float roll);
 void drawStatusBar(bool recording);
 void drawVerticalBar(int16_t currentVal);
 void drawHorizon(float roll);
+
+} // namespace ui
+} // namespace liftrr

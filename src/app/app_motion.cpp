@@ -1,5 +1,5 @@
 #include "app/app_motion.h"
-#include "globals.h"
+#include "core/globals.h"
 
 namespace liftrr {
 namespace app {
@@ -12,27 +12,27 @@ void initMotionState(MotionState &state, unsigned long nowMs) {
   state.lastYaw = 0.0f;
 }
 
-void updateCalibrationFlags(const SensorSample &sample, bool &isCalibrated) {
+void updateCalibrationFlags(const liftrr::sensors::SensorSample &sample, bool &isCalibrated) {
   // Require system calibration >= 2 for "calibrated" status (0-3 scale)
   // 3 is fully calibrated, but 2 is often usable.
   isCalibrated = (sample.s >= 2);
 }
 
 void enforceCalibrationModeGuard(bool isCalibrated, bool laserValid,
-                                 DeviceMode &deviceMode) {
-  if (deviceMode == MODE_RUN) {
+                                 liftrr::core::DeviceMode &deviceMode) {
+  if (deviceMode == liftrr::core::MODE_RUN) {
     if (!isCalibrated) {
-      deviceMode = MODE_CALIBRATE;
+      deviceMode = liftrr::core::MODE_CALIBRATE;
     }
-  } else if (deviceMode == MODE_CALIBRATE) {
+  } else if (deviceMode == liftrr::core::MODE_CALIBRATE) {
     if (isCalibrated && laserValid) {
-      deviceMode = MODE_RUN;
+      deviceMode = liftrr::core::MODE_RUN;
     }
   }
 }
 
-void updateMotionAndMode(const RelativePose &pose, unsigned long nowMs,
-                         MotionState &state, DeviceMode &deviceMode,
+void updateMotionAndMode(const liftrr::sensors::RelativePose &pose, unsigned long nowMs,
+                         MotionState &state, liftrr::core::DeviceMode &deviceMode,
                          bool isCalibrated, bool laserValid) {
 
   // 1. Detect significant motion
@@ -48,8 +48,8 @@ void updateMotionAndMode(const RelativePose &pose, unsigned long nowMs,
     state.lastMotionTime = nowMs;
     
     // --- ADDED LOGIC: Wake up from IDLE ---
-    if (deviceMode == MODE_IDLE) {
-      deviceMode = MODE_RUN;
+    if (deviceMode == liftrr::core::MODE_IDLE) {
+      deviceMode = liftrr::core::MODE_RUN;
     }
     // --------------------------------------
 
@@ -62,9 +62,9 @@ void updateMotionAndMode(const RelativePose &pose, unsigned long nowMs,
   // 2. Auto-IDLE Timeout
   const unsigned long IDLE_TIMEOUT_MS = 30000;
 
-  if (deviceMode == MODE_RUN) {
+  if (deviceMode == liftrr::core::MODE_RUN) {
     if (nowMs - state.lastMotionTime > IDLE_TIMEOUT_MS) {
-      deviceMode = MODE_IDLE;
+      deviceMode = liftrr::core::MODE_IDLE;
     }
   }
 }

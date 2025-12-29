@@ -11,7 +11,7 @@
 namespace liftrr {
 namespace ble {
 
-// BLE error codes for initialization and runtime issues
+// BLE error codes.
 enum class BleError : uint8_t {
     NONE = 0,
     INIT_FAILED,
@@ -22,13 +22,13 @@ enum class BleError : uint8_t {
     ADVERTISING_START_FAILED
 };
 
-// Configuration passed to BLE initialization
+// BLE init config.
 struct BleInitConfig {
     const char *deviceName;  // Shown in Android BT scanner
     uint16_t mtu;            // Desired MTU (e.g. 185 for ESP32)
 };
 
-// Application-level callbacks that your main code can implement
+// Application callbacks.
 class BleCallbacks {
 public:
     virtual ~BleCallbacks();
@@ -42,17 +42,12 @@ public:
     virtual void onDisconnected();
 };
 
-// UUIDs for the LIFTRR BLE control service and its characteristics
+// BLE UUIDs.
 extern const char *const LIFTRR_CONTROL_SERVICE_UUID;
 extern const char *const LIFTRR_COMMAND_CHAR_UUID;
 extern const char *const LIFTRR_STATUS_CHAR_UUID;
 
-// BLE manager responsible for:
-//  - Initializing the ESP32 BLE stack
-//  - Creating GATT server, service and characteristics
-//  - Handling connection callbacks
-//  - Routing incoming COMMAND writes to BleCallbacks
-//  - Providing helpers to send STATUS notifications back to the phone
+// BLE manager for GATT control and notifications.
 class BleManager : public BLEServerCallbacks, public BLECharacteristicCallbacks {
 public:
     BleManager();

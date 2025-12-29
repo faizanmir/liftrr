@@ -3,7 +3,7 @@
 namespace liftrr {
 namespace ble {
 
-// ==== UUID definitions =======================================================
+// UUID definitions.
 
 const char *const LIFTRR_CONTROL_SERVICE_UUID =
     "c7ccb0e4-7cd7-45f6-9693-b3dda2d77672";
@@ -12,7 +12,7 @@ const char *const LIFTRR_COMMAND_CHAR_UUID =
 const char *const LIFTRR_STATUS_CHAR_UUID =
     "27746aa3-5fae-44c1-a1eb-65844cc315dc";
 
-// ==== BleCallbacks default implementations ===================================
+// BleCallbacks defaults.
 
 BleCallbacks::~BleCallbacks() = default;
 
@@ -28,7 +28,7 @@ void BleCallbacks::onDisconnected() {
     // default no-op
 }
 
-// ==== BleManager implementation ==============================================
+// BleManager implementation.
 
 BleManager::BleManager()
     : _lastError(BleError::NONE),
@@ -163,7 +163,7 @@ bool BleManager::isConnected() const {
     return _isConnected;
 }
 
-// ==== BLE callbacks ==========================================================
+// BLE callbacks.
 
 void BleManager::onConnect(BLEServer *pServer) {
     (void)pServer;

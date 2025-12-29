@@ -1,9 +1,12 @@
 #pragma once
 
 #include <Arduino.h>
-#include <Adafruit_BNO055.h>  // for sensors_event_t
+#include <Adafruit_BNO055.h>
 
-// Raw sample from IMU + laser.
+namespace liftrr {
+namespace sensors {
+
+// Raw IMU + laser sample.
 struct SensorSample {
     sensors_event_t event;  // orientation etc. from BNO055
 
@@ -15,7 +18,7 @@ struct SensorSample {
     int16_t rawDist = 0;    // latest raw distance reading (mm)
 };
 
-// Pose relative to current calibration offsets.
+// Pose relative to calibration offsets.
 struct RelativePose {
     int16_t relDist;   // mm
     float   relRoll;   // deg
@@ -23,14 +26,24 @@ struct RelativePose {
     float   relYaw;    // deg (normalized to [-180, 180])
 };
 
-// Initialize all sensors (IMU + laser).
-// Assumes Wire.begin(...) was already called in setup().
+enum DeviceFacing {
+    FACING_UP,
+    FACING_DOWN,
+    FACING_LEFT,
+    FACING_RIGHT,
+};
+
+// Initialize sensors (assumes Wire.begin).
 void sensorsInit();
 
 // Read IMU + laser into a SensorSample.
-// Updates global 'distance' and 'laserValid' (from globals.h) as side effects.
 void sensorsRead(SensorSample& out);
 
-// Compute pose relative to current calibration offsets
-// (laserOffset, rollOffset, pitchOffset, yawOffset from globals.h).
+// Compute pose relative to offsets.
 void sensorsComputePose(const SensorSample& sample, RelativePose& out);
+
+// Coarse facing direction from roll/pitch.
+DeviceFacing sensorsFacingDirection(const RelativePose& pose);
+
+} // namespace sensors
+} // namespace liftrr

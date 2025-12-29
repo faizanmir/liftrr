@@ -2,110 +2,110 @@
 
 #include <Arduino.h>
 
-#include "globals.h"
-#include "storage.h"
-#include "ui.h"
+#include "core/globals.h"
+#include "storage/storage.h"
+#include "ui/ui.h"
 
 namespace liftrr {
 namespace app {
 
-static const char* modeLabel(DeviceMode mode) {
+static const char* modeLabel(liftrr::core::DeviceMode mode) {
     switch (mode) {
-        case MODE_RUN:  return "RUN";
-        case MODE_DUMP: return "DUMP";
-        case MODE_IDLE: return "IDLE";
+        case liftrr::core::MODE_RUN:  return "RUN";
+        case liftrr::core::MODE_DUMP: return "DUMP";
+        case liftrr::core::MODE_IDLE: return "IDLE";
         default:        return "UNK";
     }
 }
 
 static void drawHeader(const char* title) {
-    display.fillRect(0, 0, SCREEN_WIDTH, 10, SSD1306_WHITE);
-    display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    display.setTextSize(1);
-    display.setCursor(2, 1);
-    display.print(title);
-    display.setTextColor(SSD1306_WHITE);
+    liftrr::core::display.fillRect(0, 0, SCREEN_WIDTH, 10, SSD1306_WHITE);
+    liftrr::core::display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+    liftrr::core::display.setTextSize(1);
+    liftrr::core::display.setCursor(2, 1);
+    liftrr::core::display.print(title);
+    liftrr::core::display.setTextColor(SSD1306_WHITE);
 }
 
 static void drawInfoLine(int y) {
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
+    liftrr::core::display.setTextSize(1);
+    liftrr::core::display.setTextColor(SSD1306_WHITE);
 
-    display.setCursor(0, y);
-    display.print(modeLabel(deviceMode));
+    liftrr::core::display.setCursor(0, y);
+    liftrr::core::display.print(modeLabel(liftrr::core::deviceMode));
 
-    display.setCursor(30, y);
-    display.print(storageIsSessionActive() ? "S:ON" : "S:--");
+    liftrr::core::display.setCursor(30, y);
+    liftrr::core::display.print(liftrr::storage::storageIsSessionActive() ? "S:ON" : "S:--");
 
-    display.setCursor(60, y);
-    display.print(liftrr::gBleManager.isConnected() ? "B:ON" : "B:--");
+    liftrr::core::display.setCursor(60, y);
+    liftrr::core::display.print(liftrr::gBleManager.isConnected() ? "B:ON" : "B:--");
 
-    display.setCursor(90, y);
-    display.print((isCalibrated && laserValid) ? "C:OK" : "C:--");
+    liftrr::core::display.setCursor(90, y);
+    liftrr::core::display.print((liftrr::core::isCalibrated && liftrr::core::laserValid) ? "C:OK" : "C:--");
 }
 
 void renderDumpScreen() {
-    display.clearDisplay();
+    liftrr::core::display.clearDisplay();
     drawHeader("DUMP");
     drawInfoLine(12);
 
-    display.setTextSize(2);
-    display.setCursor(10, 24);
-    display.println("DUMP MODE");
-    display.setTextSize(1);
-    display.setCursor(8, 48);
-    display.println("Send 'p' over serial");
-    display.display();
+    liftrr::core::display.setTextSize(2);
+    liftrr::core::display.setCursor(10, 24);
+    liftrr::core::display.println("DUMP MODE");
+    liftrr::core::display.setTextSize(1);
+    liftrr::core::display.setCursor(8, 48);
+    liftrr::core::display.println("Send 'p' over serial");
+    liftrr::core::display.display();
 }
 
 void renderIdleScreen() {
-    display.clearDisplay();
+    liftrr::core::display.clearDisplay();
     drawHeader("IDLE");
     drawInfoLine(12);
 
-    display.setTextSize(2);
-    display.setCursor(15, 26);
-    display.println("IDLE MODE");
-    display.display();
+    liftrr::core::display.setTextSize(2);
+    liftrr::core::display.setCursor(15, 26);
+    liftrr::core::display.println("IDLE MODE");
+    liftrr::core::display.display();
 }
 
-void renderCalibrationOrWarmupScreen(const SensorSample& sample) {
+void renderCalibrationOrWarmupScreen(const liftrr::sensors::SensorSample& sample) {
     drawHeader("SETUP");
 
-    display.setTextSize(1);
-    display.setCursor(0, 12);
-    display.print("G:"); display.print(sample.g);
-    display.print(" A:"); display.print(sample.a);
-    display.print(" M:"); display.print(sample.m);
+    liftrr::core::display.setTextSize(1);
+    liftrr::core::display.setCursor(0, 12);
+    liftrr::core::display.print("G:"); liftrr::core::display.print(sample.g);
+    liftrr::core::display.print(" A:"); liftrr::core::display.print(sample.a);
+    liftrr::core::display.print(" M:"); liftrr::core::display.print(sample.m);
 
-    if (!isCalibrated) {
+    if (!liftrr::core::isCalibrated) {
         // IMU calibration hints
-        display.setCursor(4, 24);
-        display.println("IMU CALIBRATION");
-        display.setCursor(4, 34);
-        display.println("- Rotate device slowly");
-        display.setCursor(4, 44);
-        display.println("  in all directions");
-        display.setCursor(4, 54);
-        display.println("- Keep bar steady after");
-    } else if (!laserValid) {
+        liftrr::core::display.setCursor(4, 24);
+        liftrr::core::display.println("IMU CALIBRATION");
+        liftrr::core::display.setCursor(4, 34);
+        liftrr::core::display.println("- Rotate device slowly");
+        liftrr::core::display.setCursor(4, 44);
+        liftrr::core::display.println("  in all directions");
+        liftrr::core::display.setCursor(4, 54);
+        liftrr::core::display.println("- Keep bar steady after");
+    } else if (!liftrr::core::laserValid) {
         // Laser calibration hints
-        display.setCursor(4, 24);
-        display.println("LASER CALIBRATION");
-        display.setCursor(4, 34);
-        display.println("- Point sensor at floor");
-        display.setCursor(4, 44);
-        display.println("- Hold still 1-2 sec");
+        liftrr::core::display.setCursor(4, 24);
+        liftrr::core::display.println("LASER CALIBRATION");
+        liftrr::core::display.setCursor(4, 34);
+        liftrr::core::display.println("- Point sensor at floor");
+        liftrr::core::display.setCursor(4, 44);
+        liftrr::core::display.println("- Hold still 1-2 sec");
     }
 }
 
-void renderTrackingScreen(const RelativePose& pose) {
-    bool tracking = (laserOffset != 0);
-    drawStatusBar(tracking);
+void renderTrackingScreen(const liftrr::sensors::RelativePose& pose) {
+    bool tracking = (liftrr::core::laserOffset != 0);
+    liftrr::ui::drawStatusBar(tracking);
     drawInfoLine(12);
 
-    drawVerticalBar(pose.relDist);
-    drawHorizon(pose.relRoll);
+    liftrr::ui::drawVerticalBar(pose.relDist);
+    liftrr::ui::drawHorizon(pose.relRoll);
 
     // Dynamic Text Centering
     int xPos = 10;
@@ -114,19 +114,35 @@ void renderTrackingScreen(const RelativePose& pose) {
     else if (absDist < 100) xPos = 35;
     else if (absDist < 1000) xPos = 15;
 
-    display.setTextSize(3);
-    display.setCursor(xPos, 22);
-    display.print(pose.relDist);
+    liftrr::core::display.setTextSize(3);
+    liftrr::core::display.setCursor(xPos, 22);
+    liftrr::core::display.print(pose.relDist);
 
-    display.setTextSize(1);
+    liftrr::core::display.setTextSize(1);
     int unitX = xPos + (absDist >= 1000 ? 75 : (absDist >= 100 ? 55 : 38));
-    display.setCursor(unitX, 34);
-    display.print("mm");
+    liftrr::core::display.setCursor(unitX, 34);
+    liftrr::core::display.print("mm");
 
-    display.setCursor(0, 50);
-    display.print("P:"); display.print((int)pose.relPitch);
-    display.setCursor(60, 50);
-    display.print("Y:"); display.print((int)pose.relYaw);
+    liftrr::core::display.setCursor(0, 50);
+    liftrr::core::display.print("P:"); liftrr::core::display.print((int)pose.relPitch);
+    liftrr::core::display.setCursor(60, 50);
+    liftrr::core::display.print("Y:"); liftrr::core::display.print((int)pose.relYaw);
+}
+
+void renderOrientationWarningScreen(liftrr::sensors::DeviceFacing facing) {
+    liftrr::core::display.clearDisplay();
+    drawHeader("ORIENTATION");
+    drawInfoLine(12);
+
+    liftrr::core::display.setTextSize(2);
+    liftrr::core::display.setCursor(8, 26);
+    liftrr::core::display.println("FACE");
+    liftrr::core::display.setCursor(8, 44);
+    liftrr::core::display.println("UP/DOWN");
+
+    liftrr::core::display.setTextSize(1);
+    liftrr::core::display.setCursor(90, 50);
+    liftrr::core::display.print(facing == liftrr::sensors::FACING_LEFT ? "LEFT" : "RIGHT");
 }
 
 } // namespace app

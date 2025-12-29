@@ -1,3 +1,6 @@
+namespace liftrr {
+namespace storage {
+
 bool storageInitSd();
 
 bool storageIsSessionActive();
@@ -31,3 +34,9 @@ bool storageReadSessionIndex(size_t cursor,
                              void *ctx);
 
 bool storageRebuildSessionIndex(size_t *outCount);
+
+// Lookup session in index; outName set to "<sessionId>.csv" or ".tmp".
+bool storageFindSessionInIndex(const String &sessionId, String &outName);
+
+} // namespace storage
+} // namespace liftrr
