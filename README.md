@@ -1,28 +1,31 @@
 # LIFTRR
 
-ESP32 firmware for a lift-tracking device using a VL53L1X distance sensor and a BNO055 IMU. It renders an OLED UI, logs sessions to SD, supports BLE control, and streams session files over Bluetooth Classic. The codebase uses dependency injection to keep hardware access and app logic loosely coupled.
+ESP32 firmware for a lift-tracking device using a VL53L1X ToF distance sensor and a BNO055 IMU. It renders an SSD1306 OLED UI, logs sessions to SD, exposes a BLE JSON control protocol, and streams session files over Bluetooth Classic.
 
 ## Features
 - Relative distance + orientation (roll/pitch/yaw)
-- OLED UI with status, tracking, and orientation warning screen
-- SD session logging (CSV + index)
-- BLE control protocol (modes, sessions, time sync, listing, file request)
+- OLED UI with status, tracking, calibration, idle, dump, and orientation warning screens
+- SD session logging (CSV + NDJSON index)
+- BLE JSON control protocol (time sync, modes, sessions, listing, file request)
 - Bluetooth Classic file streaming for sessions
-- Auto-IDLE after 30s without motion
+- Auto-IDLE after 30s without motion, wake on motion
+- Serial debug commands (single-character + JSON)
 
 ## Hardware
 - ESP32 dev board (Arduino framework)
-- BNO055 IMU (I2C)
-- VL53L1X ToF distance sensor (I2C)
-- SSD1306 128x64 OLED (I2C, address 0x3C)
+- BNO055 IMU (I2C, 0x28)
+- VL53L1X ToF distance sensor (I2C, 0x29)
+- SSD1306 128x64 OLED (I2C, 0x3C)
 - microSD card module (SPI)
 - Optional SD activity LED on `LED_SD`
 
-## Pins / bus
-- I2C: SDA 21, SCL 22 (set in `src/core/main.cpp`)
-- OLED address: 0x3C (set in `src/core/config.h`)
+## Pins / buses
+- I2C: SDA 21, SCL 22 (`Wire.begin(21, 22)` in `src/core/main.cpp`)
+- OLED address: 0x3C (`SCREEN_ADDRESS` in `src/core/config.h`)
+- VL53L1X address: 0x29 (set in `src/core/main.cpp`)
 - SD CS: 13 (`SD_CS` in `src/core/config.h`)
 - SD activity LED: 2 (`LED_SD` in `src/core/config.h`)
+- `TARE_BTN_PIN` and `FLASH_*` are defined in `src/core/config.h` but not used in firmware.
 
 ## Build and upload (PlatformIO)
 ```
@@ -34,28 +37,33 @@ Set `upload_port` / `monitor_port` in `platformio.ini` if needed.
 
 ## Runtime modes and UI
 - RUN: live sensing; logging only while a session is active
-- CALIBRATE: shown when IMU/laser not ready
-- IDLE: entered after 30s of no motion
-- DUMP: dedicated screen for dump/debug
+- CALIBRATE: shown when IMU or laser are not ready; auto-switches to RUN when ready
+- IDLE: entered after 30s of no motion; any motion returns to RUN
+- DUMP: dedicated screen; sensing/logging paused
 
 If the device is facing LEFT/RIGHT, the tracking screen is replaced by an orientation warning screen.
 
-## Architecture overview
-- Composition root in `src/core/main.cpp` instantiates hardware (I2C, OLED, SD, sensors) and injects them into subsystem managers.
-- `liftrr::sensors::SensorManager` owns calibration state, offsets, and provides pose samples.
-- `liftrr::storage::StorageManager` owns SD session logging and the session index.
-- `liftrr::app::DisplayManager` renders screens using injected UI, BLE, storage, and sensor state.
-- `liftrr::ble::BleApp` owns BLE app behavior and delegates to `liftrr::ble::BleManager`.
-- `liftrr::core::RuntimeState` owns device mode and runtime timers (no globals).
-
-## Serial commands
-From `src/app/serial_commands.cpp`:
+## Serial control
+Single-character commands:
 - `m`: cycle RUN -> DUMP -> IDLE
 - `r`: force RUN
-- `s`: start session (only if RUN and no active session)
+- `s`: start session (auto-generated ID)
 - `e`: end session
 - `i`: print session index and directory info
 - `d`: print calibration + distance debug
+
+JSON commands (newline-terminated, one per line):
+```
+{"id":"1","name":"ping","body":{}}
+{"id":"2","name":"capabilities.get","body":{}}
+{"id":"3","name":"time.sync","body":{"phoneEpochMs":1710000000000}}
+{"id":"4","name":"mode.set","body":{"mode":"RUN"}}
+{"id":"5","name":"session.start","body":{"lift":"deadlift","sessionId":"optional"}}
+{"id":"6","name":"session.end","body":{}}
+{"id":"7","name":"sessions.list","body":{"cursor":0,"limit":15}}
+{"id":"8","name":"session.stream","body":{"sessionId":"1710000000000"}}
+```
+Use "Newline" line ending in the serial monitor.
 
 ## BLE control
 Device name: `LIFTRR` (MTU 185)
@@ -63,12 +71,13 @@ Device name: `LIFTRR` (MTU 185)
 Commands (JSON over BLE):
 ```
 {"id":"1","name":"ping","body":{}}
-{"id":"2","name":"mode.set","body":{"mode":"RUN"}}
-{"id":"3","name":"session.start","body":{"lift":"deadlift","sessionId":"optional"}}
-{"id":"4","name":"session.end","body":{}}
-{"id":"5","name":"sessions.list","body":{"cursor":0,"limit":15}}
-{"id":"6","name":"time.sync","body":{"phoneEpochMs":1710000000000}}
-{"id":"7","name":"session.stream","body":{"sessionId":"1710000000000"}}
+{"id":"2","name":"capabilities.get","body":{}}
+{"id":"3","name":"mode.set","body":{"mode":"RUN"}}
+{"id":"4","name":"session.start","body":{"lift":"deadlift","sessionId":"optional"}}
+{"id":"5","name":"session.end","body":{}}
+{"id":"6","name":"sessions.list","body":{"cursor":0,"limit":15}}
+{"id":"7","name":"time.sync","body":{"phoneEpochMs":1710000000000}}
+{"id":"8","name":"session.stream","body":{"sessionId":"1710000000000"}}
 ```
 
 Notes:
@@ -79,7 +88,9 @@ Notes:
 Events:
 - `orientation.status` with `{facing, ok}`
 - `calibration.succeeded` with `{imu, laser, ready}`
+- `session.started` when a pending session auto-starts
 - `bt_classic.required` when Classic is not connected on BLE connect
+- `time.sync.timeout` when the sync window expires
 
 ## Bluetooth Classic file streaming
 When the phone sends `session.stream` over BLE, the device checks the SD index and streams the file over Classic Bluetooth if connected.
@@ -112,11 +123,11 @@ Index lines:
 ```
 
 ## Repo layout
-- `src/core/`: main loop, runtime state, config, RTC
+- `src/core/`: main loop, runtime state, config, time sync
 - `src/sensors/`: sensor interfaces, adapters, and sensor manager
 - `src/storage/`: SD logging manager and index helpers
-- `src/ui/`: OLED drawing helpers (UI renderer)
-- `src/comm/`: Bluetooth Classic
+- `src/ui/`: OLED drawing helpers
+- `src/comm/`: Bluetooth Classic streaming
 - `src/ble/`: BLE protocol, manager, and app wrapper
 - `src/app/`: display manager, motion controller, serial commands
 - `lib/`, `include/`, `test/`: PlatformIO standard structure
