@@ -4,20 +4,22 @@
 
 #include "ble.h"
 #include "comm/bt_classic.h"
-#include "core/globals.h"
-#include "storage/storage.h"
 
 namespace liftrr {
 namespace ble {
 
 class AppBleCallbacks : public BleCallbacks {
 public:
-    explicit AppBleCallbacks(BleManager &ble) : ble_(ble) {}
+    AppBleCallbacks(BleManager &ble,
+                    liftrr::core::RuntimeState &runtime,
+                    liftrr::sensors::SensorManager &sensors,
+                    liftrr::storage::StorageManager &storage)
+        : ble_(ble), runtime_(runtime), sensors_(sensors), storage_(storage) {}
 
     void onRawCommand(const std::string &raw) override {
         Serial.println("[BLE] Command received:");
         Serial.println(raw.c_str());
-        handleBleCommand(raw);
+        handleBleCommand(ble_, runtime_, sensors_, storage_, raw);
     }
 
     void onConnected() override {
@@ -25,13 +27,13 @@ public:
         ble_.sendStatus(F("{\"event\":\"CONNECTED\"}"));
         gPendingTimeSync = true;
         gTimeSyncRequestedMs = millis();
-        sendBleEvt("time.sync.request", [&](JsonObject out) {
+        sendBleEvt(ble_, "time.sync.request", [&](JsonObject out) {
             out["timeoutMs"] = kTimeSyncTimeoutMs;
         });
 
         if (!liftrr::comm::btClassicIsConnected()) {
             liftrr::comm::btClassicInit("LIFTRR");
-            sendBleEvt("bt_classic.required", [&](JsonObject out) {
+            sendBleEvt(ble_, "bt_classic.required", [&](JsonObject out) {
                 out["status"] = "not_connected";
             });
         }
@@ -44,43 +46,59 @@ public:
 
 private:
     BleManager &ble_;
+    liftrr::core::RuntimeState &runtime_;
+    liftrr::sensors::SensorManager &sensors_;
+    liftrr::storage::StorageManager &storage_;
 };
 
-static AppBleCallbacks gBleCallbacks(liftrr::gBleManager);
+BleApp::BleApp(liftrr::ble::BleManager &ble,
+               liftrr::core::RuntimeState &runtime,
+               liftrr::sensors::SensorManager &sensors,
+               liftrr::storage::StorageManager &storage)
+    : ble_(ble),
+      runtime_(runtime),
+      sensors_(sensors),
+      storage_(storage),
+      callbacks_(new AppBleCallbacks(ble_, runtime_, sensors_, storage_)) {}
 
-void bleAppInit() {
+BleApp::~BleApp() {
+    delete callbacks_;
+    callbacks_ = nullptr;
+}
+
+void BleApp::init() {
     BleInitConfig bleCfg;
     bleCfg.deviceName = "LIFTRR";
     bleCfg.mtu = 185;
 
-    liftrr::gBleManager.begin(bleCfg, &gBleCallbacks);
+    ble_.begin(bleCfg, callbacks_);
 }
 
-void bleAppLoop() {
-    liftrr::gBleManager.loop();
+void BleApp::loop() {
+    ble_.loop();
 
     if (gPendingTimeSync &&
         (millis() - gTimeSyncRequestedMs) >= kTimeSyncTimeoutMs) {
         gPendingTimeSync = false;
-        sendBleEvt("time.sync.timeout", [&](JsonObject out) {
+        sendBleEvt(ble_, "time.sync.timeout", [&](JsonObject out) {
             out["timeoutMs"] = kTimeSyncTimeoutMs;
         });
     }
 
     if (gPendingSessionStart &&
-        liftrr::core::deviceMode == liftrr::core::MODE_RUN &&
-        !liftrr::storage::storageIsSessionActive() &&
-        liftrr::core::isCalibrated &&
-        liftrr::core::laserValid) {
+        runtime_.deviceMode() == liftrr::core::MODE_RUN &&
+        !storage_.isSessionActive() &&
+        sensors_.isCalibrated() &&
+        sensors_.laserValid()) {
 
-        liftrr::storage::storageStartSession(gPendingSessionId,
-                            gPendingLift.length() ? gPendingLift.c_str() : "unknown",
-                            liftrr::core::laserOffset,
-                            liftrr::core::rollOffset,
-                            liftrr::core::pitchOffset,
-                            liftrr::core::yawOffset);
+        storage_.startSession(gPendingSessionId,
+                              gPendingLift.length() ? gPendingLift.c_str() : "unknown",
+                              sensors_.laserOffset(),
+                              sensors_.rollOffset(),
+                              sensors_.pitchOffset(),
+                              sensors_.yawOffset());
 
-        sendBleEvt("session.started", [&](JsonObject out) {
+        sendBleEvt(ble_, "session.started", [&](JsonObject out) {
             out["sessionId"] = gPendingSessionId;
             out["lift"]      = gPendingLift;
             out["auto"]      = true;
@@ -90,11 +108,11 @@ void bleAppLoop() {
     }
 }
 
-void bleAppSetModeApplier(IModeApplier* applier) {
+void BleApp::setModeApplier(IModeApplier* applier) {
     gModeApplier = applier;
 }
 
-void bleAppNotifyFacing(liftrr::sensors::DeviceFacing facing) {
+void BleApp::notifyFacing(liftrr::sensors::DeviceFacing facing) {
     static bool hasLast = false;
     static liftrr::sensors::DeviceFacing lastFacing = liftrr::sensors::FACING_DOWN;
     static bool lastOk = true;
@@ -108,7 +126,7 @@ void bleAppNotifyFacing(liftrr::sensors::DeviceFacing facing) {
     lastFacing = facing;
     lastOk = ok;
 
-    if (!liftrr::gBleManager.isConnected()) return;
+    if (!ble_.isConnected()) return;
 
     const char *facingStr = "UNKNOWN";
     switch (facing) {
@@ -119,13 +137,13 @@ void bleAppNotifyFacing(liftrr::sensors::DeviceFacing facing) {
         default: break;
     }
 
-    sendBleEvt("orientation.status", [&](JsonObject out) {
+    sendBleEvt(ble_, "orientation.status", [&](JsonObject out) {
         out["facing"] = facingStr;
         out["ok"] = ok;
     });
 }
 
-void bleAppNotifyCalibration(bool imuCalibrated, bool laserValid) {
+void BleApp::notifyCalibration(bool imuCalibrated, bool laserValid) {
     static bool lastImuCalibrated = false;
 
     if (!imuCalibrated) {
@@ -135,9 +153,9 @@ void bleAppNotifyCalibration(bool imuCalibrated, bool laserValid) {
     if (lastImuCalibrated) return;
     lastImuCalibrated = true;
 
-    if (!liftrr::gBleManager.isConnected()) return;
+    if (!ble_.isConnected()) return;
 
-    sendBleEvt("calibration.succeeded", [&](JsonObject out) {
+    sendBleEvt(ble_, "calibration.succeeded", [&](JsonObject out) {
         out["imu"] = imuCalibrated;
         out["laser"] = laserValid;
         out["ready"] = imuCalibrated && laserValid;

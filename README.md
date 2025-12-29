@@ -1,6 +1,6 @@
 # LIFTRR
 
-ESP32 firmware for a lift-tracking device using a VL53L1X distance sensor and a BNO055 IMU. It renders an OLED UI, logs sessions to SD, supports BLE control, and streams session files over Bluetooth Classic.
+ESP32 firmware for a lift-tracking device using a VL53L1X distance sensor and a BNO055 IMU. It renders an OLED UI, logs sessions to SD, supports BLE control, and streams session files over Bluetooth Classic. The codebase uses dependency injection to keep hardware access and app logic loosely coupled.
 
 ## Features
 - Relative distance + orientation (roll/pitch/yaw)
@@ -39,6 +39,14 @@ Set `upload_port` / `monitor_port` in `platformio.ini` if needed.
 - DUMP: dedicated screen for dump/debug
 
 If the device is facing LEFT/RIGHT, the tracking screen is replaced by an orientation warning screen.
+
+## Architecture overview
+- Composition root in `src/core/main.cpp` instantiates hardware (I2C, OLED, SD, sensors) and injects them into subsystem managers.
+- `liftrr::sensors::SensorManager` owns calibration state, offsets, and provides pose samples.
+- `liftrr::storage::StorageManager` owns SD session logging and the session index.
+- `liftrr::app::DisplayManager` renders screens using injected UI, BLE, storage, and sensor state.
+- `liftrr::ble::BleApp` owns BLE app behavior and delegates to `liftrr::ble::BleManager`.
+- `liftrr::core::RuntimeState` owns device mode and runtime timers (no globals).
 
 ## Serial commands
 From `src/app/serial_commands.cpp`:
@@ -104,13 +112,13 @@ Index lines:
 ```
 
 ## Repo layout
-- `src/core/`: main loop, globals, config, RTC
-- `src/sensors/`: IMU + laser handling
-- `src/storage/`: SD logging and index
-- `src/ui/`: OLED drawing helpers
+- `src/core/`: main loop, runtime state, config, RTC
+- `src/sensors/`: sensor interfaces, adapters, and sensor manager
+- `src/storage/`: SD logging manager and index helpers
+- `src/ui/`: OLED drawing helpers (UI renderer)
 - `src/comm/`: Bluetooth Classic
-- `src/ble/`: BLE protocol and manager
-- `src/app/`: app logic, display, motion, serial commands
+- `src/ble/`: BLE protocol, manager, and app wrapper
+- `src/app/`: display manager, motion controller, serial commands
 - `lib/`, `include/`, `test/`: PlatformIO standard structure
 
 Dependencies are listed in `platformio.ini`.

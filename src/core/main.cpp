@@ -8,43 +8,67 @@
 #include "sensors/sensors.h"
 #include "storage/storage.h"
 #include "storage/storage_indicators.h"
+#include <Adafruit_BNO055.h>
+#include <Adafruit_VL53L1X.h>
 
 // Motion auto-switch state.
 static liftrr::app::MotionState gMotionState;
+static liftrr::app::MotionController gMotionController;
+
+// Hardware peripherals.
+static Adafruit_SSD1306 gDisplay(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+static Adafruit_BNO055 gBno(55, 0x28);
+static Adafruit_VL53L1X gLaser;
+
+// Adapters + managers.
+static liftrr::sensors::Bno055Sensor gImuAdapter(gBno);
+static liftrr::sensors::Vl53l1xSensor gLaserAdapter(gLaser, 0x29, &Wire, true);
+static liftrr::sensors::SensorManager gSensorManager(gImuAdapter, gLaserAdapter);
+static liftrr::storage::StorageManager gStorageManager(SD, liftrr::storage::pulseSDCardLED);
+static liftrr::core::RuntimeState gRuntimeState;
+static liftrr::ble::BleManager gBleManager;
+static liftrr::ble::BleApp gBleApp(gBleManager, gRuntimeState, gSensorManager, gStorageManager);
+static liftrr::ui::UiRenderer gUi(gDisplay, gSensorManager);
+static liftrr::app::DisplayManager gDisplayManager(
+    gDisplay, gUi, gStorageManager, gBleManager, gSensorManager, gRuntimeState);
+static liftrr::app::SerialCommandHandler gSerialHandler(
+    gRuntimeState, gStorageManager, gSensorManager);
 
 struct ModeApplier : liftrr::ble::IModeApplier {
-  explicit ModeApplier(liftrr::app::MotionState *state) : state_(state) {}
+  ModeApplier(liftrr::core::RuntimeState &runtime, liftrr::app::MotionState *state)
+      : runtime_(runtime), state_(state) {}
 
   void applyMode(const char *mode) override {
     if (state_)
       state_->lastMotionTime = millis();
 
-    if (strcmp(mode, "RUN") == 0) liftrr::core::deviceMode = liftrr::core::MODE_RUN;
-    else if (strcmp(mode, "IDLE") == 0) liftrr::core::deviceMode = liftrr::core::MODE_IDLE;
-    else if (strcmp(mode, "DUMP") == 0) liftrr::core::deviceMode = liftrr::core::MODE_DUMP;
-    else if (strcmp(mode, "CALIBRATE") == 0) liftrr::core::deviceMode = liftrr::core::MODE_CALIBRATE;
+    if (strcmp(mode, "RUN") == 0) runtime_.setDeviceMode(liftrr::core::MODE_RUN);
+    else if (strcmp(mode, "IDLE") == 0) runtime_.setDeviceMode(liftrr::core::MODE_IDLE);
+    else if (strcmp(mode, "DUMP") == 0) runtime_.setDeviceMode(liftrr::core::MODE_DUMP);
+    else if (strcmp(mode, "CALIBRATE") == 0) runtime_.setDeviceMode(liftrr::core::MODE_CALIBRATE);
   }
 
 private:
+  liftrr::core::RuntimeState &runtime_;
   liftrr::app::MotionState *state_;
 };
 
-static ModeApplier gModeApplier(&gMotionState);
+static ModeApplier gModeApplier(gRuntimeState, &gMotionState);
 
 
 
 // Hardware init helpers.
 
 static void initDisplay() {
-  if (!liftrr::core::display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+  if (!gDisplay.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println("Display Init Failed");
   } else {
-    liftrr::core::display.clearDisplay();
-    liftrr::core::display.setTextSize(1);
-    liftrr::core::display.setTextColor(SSD1306_WHITE);
-    liftrr::core::display.setCursor(0, 0);
-    liftrr::core::display.println("BOOT SEQUENCE...");
-    liftrr::core::display.display();
+    gDisplay.clearDisplay();
+    gDisplay.setTextSize(1);
+    gDisplay.setTextColor(SSD1306_WHITE);
+    gDisplay.setCursor(0, 0);
+    gDisplay.println("BOOT SEQUENCE...");
+    gDisplay.display();
   }
 }
 
@@ -60,31 +84,31 @@ void setup() {
   delay(100);
 
   //2 Sensors
-  liftrr::sensors::sensorsInit();
+  gSensorManager.init();
  
   // 3. Display
   initDisplay();
 
   // 4. SD card
-  liftrr::storage::storageInitSd();
+  gStorageManager.initSd();
 
   // 5. Motion state
-  liftrr::app::initMotionState(gMotionState, millis());
+  gMotionController.initMotionState(gMotionState, millis());
 
   // 6. Storage Indicators
   liftrr::storage::defineStorageIndicators();
 
   // 8. BLE
-  liftrr::ble::bleAppInit();
-  liftrr::ble::bleAppSetModeApplier(&gModeApplier);
+  gBleApp.init();
+  gBleApp.setModeApplier(&gModeApplier);
 
   // 9. Classic Bluetooth
   liftrr::comm::btClassicInit("LIFTRR");
 }
 
 void loop() {
-  liftrr::app::handleSerialCommands(gMotionState);
-  liftrr::ble::bleAppLoop(); // BLE periodic work
+  gSerialHandler.handleSerialCommands(gMotionState);
+  gBleApp.loop(); // BLE periodic work
   liftrr::comm::btClassicLoop();
 
   unsigned long currentMillis = millis();
@@ -94,62 +118,64 @@ void loop() {
   }
 
   // --- liftrr::core::MODE_DUMP: dedicated screen, no sensing/logging ---
-  if (liftrr::core::deviceMode == liftrr::core::MODE_DUMP) {
-    if (currentMillis - liftrr::core::lastScreenUpdate >= SCREEN_INTERVAL) {
-      liftrr::core::lastScreenUpdate = currentMillis;
-      liftrr::app::renderDumpScreen();
+  if (gRuntimeState.deviceMode() == liftrr::core::MODE_DUMP) {
+    if (currentMillis - gRuntimeState.lastScreenUpdate() >= SCREEN_INTERVAL) {
+      gRuntimeState.setLastScreenUpdate(currentMillis);
+      gDisplayManager.renderDumpScreen();
     }
     return;
   }
 
   //--- 1. Read sensors ---
   liftrr::sensors::SensorSample sample;
-  liftrr::sensors::sensorsRead(sample);
+  gSensorManager.read(sample);
 
   // --- 2. Update calibration readiness flags ---
-  liftrr::app::updateCalibrationFlags(sample, liftrr::core::isCalibrated);
-  liftrr::ble::bleAppNotifyCalibration(liftrr::core::isCalibrated, liftrr::core::laserValid);
-  liftrr::app::enforceCalibrationModeGuard(liftrr::core::isCalibrated, liftrr::core::laserValid,
-                                           liftrr::core::deviceMode);
+  gMotionController.updateCalibrationStatus(sample, gSensorManager);
+  gBleApp.notifyCalibration(gSensorManager.isCalibrated(), gSensorManager.laserValid());
+  gMotionController.enforceCalibrationModeGuard(gSensorManager, gRuntimeState);
 
   // --- 3. Compute relative pose ---
   liftrr::sensors::RelativePose pose;
-  liftrr::sensors::sensorsComputePose(sample, pose);
-  liftrr::sensors::DeviceFacing facing = liftrr::sensors::sensorsFacingDirection(pose);
-  liftrr::ble::bleAppNotifyFacing(facing);
+  gSensorManager.computePose(sample, pose);
+  liftrr::sensors::DeviceFacing facing = gSensorManager.facingDirection(pose);
+  gBleApp.notifyFacing(facing);
 
   //-- 4. SD logging: only in RUN mode with an active session ---
-    if (liftrr::core::deviceMode == liftrr::core::MODE_RUN && liftrr::storage::storageIsSessionActive() && liftrr::core::isCalibrated && liftrr::core::laserValid) {
-        liftrr::storage::storageLogSample(sessionTimestampMs,
-                         sample.rawDist,
-                         pose.relDist,
-                         pose.relRoll,
-                         pose.relPitch,
-                         pose.relYaw);
+    if (gRuntimeState.deviceMode() == liftrr::core::MODE_RUN &&
+        gStorageManager.isSessionActive() &&
+        gSensorManager.isCalibrated() &&
+        gSensorManager.laserValid()) {
+        gStorageManager.logSample(sessionTimestampMs,
+                                  sample.rawDist,
+                                  pose.relDist,
+                                  pose.relRoll,
+                                  pose.relPitch,
+                                  pose.relYaw);
   }
 
   // --- 5. Motion detection and auto mode transitions ---
-    liftrr::app::updateMotionAndMode(pose, currentMillis, gMotionState, liftrr::core::deviceMode, liftrr::core::isCalibrated, liftrr::core::laserValid);
+    gMotionController.updateMotionAndMode(pose, currentMillis, gMotionState, gRuntimeState);
 
   // --- 6. Display update (10 Hz) ---
-  if (currentMillis - liftrr::core::lastScreenUpdate >= SCREEN_INTERVAL) {
-    liftrr::core::lastScreenUpdate = currentMillis;
-    liftrr::core::display.clearDisplay();
+  if (currentMillis - gRuntimeState.lastScreenUpdate() >= SCREEN_INTERVAL) {
+    gRuntimeState.setLastScreenUpdate(currentMillis);
+    gDisplay.clearDisplay();
 
-    if (liftrr::core::deviceMode == liftrr::core::MODE_IDLE) {
-      liftrr::app::renderIdleScreen();
+    if (gRuntimeState.deviceMode() == liftrr::core::MODE_IDLE) {
+      gDisplayManager.renderIdleScreen();
     } else {
       // liftrr::core::MODE_RUN or liftrr::core::MODE_CALIBRATE
-      if (liftrr::core::deviceMode == liftrr::core::MODE_CALIBRATE || !liftrr::core::laserValid) {
-        liftrr::app::renderCalibrationOrWarmupScreen(sample);
+      if (gRuntimeState.deviceMode() == liftrr::core::MODE_CALIBRATE || !gSensorManager.laserValid()) {
+        gDisplayManager.renderCalibrationOrWarmupScreen(sample);
       } else {
         if (facing == liftrr::sensors::FACING_LEFT || facing == liftrr::sensors::FACING_RIGHT) {
-          liftrr::app::renderOrientationWarningScreen(facing);
+          gDisplayManager.renderOrientationWarningScreen(facing);
         } else {
-          liftrr::app::renderTrackingScreen(pose);
+          gDisplayManager.renderTrackingScreen(pose);
         }
       }
-      liftrr::core::display.display();
+      gDisplay.display();
     }
   }
 }

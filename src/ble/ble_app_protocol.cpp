@@ -1,13 +1,12 @@
 #include "ble_app_internal.h"
 
-#include "ble.h"
-#include "core/globals.h"
 #include "core/rtc.h"
 
 namespace liftrr {
 namespace ble {
 
 void sendBleResp(
+        liftrr::ble::BleManager &ble,
         const char *name,
         const char *ref,
         bool ok,
@@ -34,10 +33,11 @@ void sendBleResp(
 
     String out;
     serializeJson(resp, out);
-    liftrr::gBleManager.sendStatus(out);
+    ble.sendStatus(out);
 }
 
 void sendBleEvt(
+        liftrr::ble::BleManager &ble,
         const char *name,
         const std::function<void(JsonObject)> &fillBody) {
 
@@ -56,7 +56,7 @@ void sendBleEvt(
 
     String out;
     serializeJson(evt, out);
-    liftrr::gBleManager.sendStatus(out);
+    ble.sendStatus(out);
 }
 
 bool equalsIgnoreCase(const String &a, const char *b) {

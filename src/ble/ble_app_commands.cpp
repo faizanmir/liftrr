@@ -2,29 +2,30 @@
 
 #include <ArduinoJson.h>
 
-#include "ble.h"
 #include "comm/bt_classic.h"
-#include "core/globals.h"
 #include "core/rtc.h"
-#include "storage/storage.h"
 #include <SD.h>
 
 namespace liftrr {
 namespace ble {
 
-void handleBleCommand(const std::string &raw) {
-    if (!liftrr::gBleManager.isConnected()) return;
+void handleBleCommand(liftrr::ble::BleManager &ble,
+                      liftrr::core::RuntimeState &runtime,
+                      liftrr::sensors::SensorManager &sensors,
+                      liftrr::storage::StorageManager &storage,
+                      const std::string &raw) {
+    if (!ble.isConnected()) return;
 
     if (raw.empty()) return;
     if (raw.size() > 2048) {
-        sendBleResp("unknown", "", false, "PAYLOAD_TOO_LARGE", "Payload exceeds 2048 bytes", nullptr);
+        sendBleResp(ble, "unknown", "", false, "PAYLOAD_TOO_LARGE", "Payload exceeds 2048 bytes", nullptr);
         return;
     }
 
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, raw);
     if (err) {
-        sendBleResp("unknown", "", false, "BAD_JSON", err.c_str(), nullptr);
+        sendBleResp(ble, "unknown", "", false, "BAD_JSON", err.c_str(), nullptr);
         return;
     }
 
@@ -35,12 +36,12 @@ void handleBleCommand(const std::string &raw) {
     JsonObject body = doc["body"].is<JsonObject>() ? doc["body"].as<JsonObject>() : JsonObject();
 
     if (name.length() == 0) {
-        sendBleResp("unknown", ref, false, "MISSING_NAME", "Missing 'name' (or legacy 'cmd')", nullptr);
+        sendBleResp(ble, "unknown", ref, false, "MISSING_NAME", "Missing 'name' (or legacy 'cmd')", nullptr);
         return;
     }
 
     if (equalsIgnoreCase(name, "ping")) {
-        sendBleResp("ping", ref, true, "OK", "", [&](JsonObject out) {
+        sendBleResp(ble, "ping", ref, true, "OK", "", [&](JsonObject out) {
             out["uptimeMs"] = (uint32_t)millis();
             out["epochMs"]  = liftrr::core::currentEpochMs();
             out["fw"]       = "dev";
@@ -49,7 +50,7 @@ void handleBleCommand(const std::string &raw) {
     }
 
     if (equalsIgnoreCase(name, "capabilities.get")) {
-        sendBleResp("capabilities.get", ref, true, "OK", "", [&](JsonObject out) {
+        sendBleResp(ble, "capabilities.get", ref, true, "OK", "", [&](JsonObject out) {
             JsonObject device = out["device"].to<JsonObject>();
             device["model"] = "LIFTRR";
             device["fw"]    = "dev";
@@ -72,14 +73,14 @@ void handleBleCommand(const std::string &raw) {
         int64_t phoneEpoch = readI64(body, doc, "phoneEpochMs", (int64_t)0);
 
         if (phoneEpoch <= 0) {
-            sendBleResp("time.sync", ref, false, "BAD_ARGS", "Missing/invalid phoneEpochMs", nullptr);
+            sendBleResp(ble, "time.sync", ref, false, "BAD_ARGS", "Missing/invalid phoneEpochMs", nullptr);
             return;
         }
 
         liftrr::core::timeSyncSetEpochMs(phoneEpoch);
         gPendingTimeSync = false;
 
-        sendBleResp("time.sync", ref, true, "OK", "", [&](JsonObject out) {
+        sendBleResp(ble, "time.sync", ref, true, "OK", "", [&](JsonObject out) {
             out["epochAtSyncMs"]  = liftrr::core::timeSyncEpochMs();
             out["millisAtSyncMs"] = liftrr::core::timeSyncMillisMs();
         });
@@ -90,43 +91,43 @@ void handleBleCommand(const std::string &raw) {
         String modeStr = String(readStr(body, doc, "mode", ""));
 
         if (modeStr.length() == 0) {
-            sendBleResp("mode.set", ref, false, "BAD_ARGS", "Missing mode", nullptr);
+            sendBleResp(ble, "mode.set", ref, false, "BAD_ARGS", "Missing mode", nullptr);
             return;
         }
 
         if (!modeStr.equalsIgnoreCase("RUN") &&
             !modeStr.equalsIgnoreCase("IDLE") &&
             !modeStr.equalsIgnoreCase("DUMP")) {
-            sendBleResp("mode.set", ref, false, "BAD_ARGS", "mode must be RUN/IDLE/DUMP", nullptr);
+            sendBleResp(ble, "mode.set", ref, false, "BAD_ARGS", "mode must be RUN/IDLE/DUMP", nullptr);
             return;
         }
 
         if (gModeApplier) {
             gModeApplier->applyMode(modeStr.c_str());
         } else if (modeStr.equalsIgnoreCase("RUN")) {
-            liftrr::core::deviceMode = liftrr::core::MODE_RUN;
+            runtime.setDeviceMode(liftrr::core::MODE_RUN);
         } else if (modeStr.equalsIgnoreCase("IDLE")) {
-            liftrr::core::deviceMode = liftrr::core::MODE_IDLE;
+            runtime.setDeviceMode(liftrr::core::MODE_IDLE);
         } else if (modeStr.equalsIgnoreCase("DUMP")) {
-            liftrr::core::deviceMode = liftrr::core::MODE_DUMP;
+            runtime.setDeviceMode(liftrr::core::MODE_DUMP);
         } else if (modeStr.equalsIgnoreCase("CALIBRATE")) {
-            liftrr::core::deviceMode = liftrr::core::MODE_CALIBRATE;
+            runtime.setDeviceMode(liftrr::core::MODE_CALIBRATE);
         }
 
-        sendBleResp("mode.set", ref, true, "OK", "", [&](JsonObject out) {
+        sendBleResp(ble, "mode.set", ref, true, "OK", "", [&](JsonObject out) {
             out["mode"] = modeStr;
         });
         return;
     }
 
     if (equalsIgnoreCase(name, "session.start")) {
-        if (liftrr::storage::storageIsSessionActive()) {
-            sendBleResp("session.start", ref, false, "ALREADY_ACTIVE", "Session already active", nullptr);
+        if (storage.isSessionActive()) {
+            sendBleResp(ble, "session.start", ref, false, "ALREADY_ACTIVE", "Session already active", nullptr);
             return;
         }
 
         if (gModeApplier) gModeApplier->applyMode("RUN");
-        else liftrr::core::deviceMode = liftrr::core::MODE_RUN;
+        else runtime.setDeviceMode(liftrr::core::MODE_RUN);
 
         const char *liftC = readStr(body, doc, "lift", "unknown");
         const char *sidC  = readStr(body, doc, "sessionId", (const char*)nullptr);
@@ -138,12 +139,12 @@ void handleBleCommand(const std::string &raw) {
             sid = (e > 0) ? String((long long)e) : String(millis());
         }
 
-        if (!liftrr::core::isCalibrated || !liftrr::core::laserValid) {
+        if (!sensors.isCalibrated() || !sensors.laserValid()) {
             gPendingSessionStart = true;
             gPendingSessionId    = sid;
             gPendingLift         = String(liftC);
 
-            sendBleResp("session.start", ref, false, "CALIBRATION_REQUIRED",
+            sendBleResp(ble, "session.start", ref, false, "CALIBRATION_REQUIRED",
                         "Calibration required; session will auto-start when ready.",
                         [&](JsonObject out) {
                             out["pending"]   = true;
@@ -154,10 +155,15 @@ void handleBleCommand(const std::string &raw) {
             return;
         }
 
-        liftrr::storage::storageStartSession(sid, liftC, liftrr::core::laserOffset, liftrr::core::rollOffset, liftrr::core::pitchOffset, liftrr::core::yawOffset);
+        storage.startSession(sid,
+                             liftC,
+                             sensors.laserOffset(),
+                             sensors.rollOffset(),
+                             sensors.pitchOffset(),
+                             sensors.yawOffset());
         clearPendingSession();
 
-        sendBleResp("session.start", ref, true, "OK", "", [&](JsonObject out) {
+        sendBleResp(ble, "session.start", ref, true, "OK", "", [&](JsonObject out) {
             out["sessionId"] = sid;
             out["lift"]      = liftC;
             out["mode"]      = "RUN";
@@ -166,19 +172,19 @@ void handleBleCommand(const std::string &raw) {
     }
 
     if (equalsIgnoreCase(name, "session.end")) {
-        if (gPendingSessionStart && !liftrr::storage::storageIsSessionActive()) {
+        if (gPendingSessionStart && !storage.isSessionActive()) {
             clearPendingSession();
-            sendBleResp("session.end", ref, true, "OK", "Canceled pending session.start", nullptr);
+            sendBleResp(ble, "session.end", ref, true, "OK", "Canceled pending session.start", nullptr);
             return;
         }
 
-        if (!liftrr::storage::storageIsSessionActive()) {
-            sendBleResp("session.end", ref, false, "NOT_ACTIVE", "No active session", nullptr);
+        if (!storage.isSessionActive()) {
+            sendBleResp(ble, "session.end", ref, false, "NOT_ACTIVE", "No active session", nullptr);
             return;
         }
 
-        liftrr::storage::storageEndSession();
-        sendBleResp("session.end", ref, true, "OK", "", nullptr);
+        storage.endSession();
+        sendBleResp(ble, "session.end", ref, true, "OK", "", nullptr);
         return;
     }
 
@@ -191,7 +197,7 @@ void handleBleCommand(const std::string &raw) {
 
         size_t nextCursor = (size_t)cursorIn;
         bool hasMore = false;
-        bool ok = liftrr::storage::storageReadSessionIndex(
+        bool ok = storage.readSessionIndex(
             (size_t)cursorIn,
             (size_t)limitIn,
             &nextCursor,
@@ -199,13 +205,13 @@ void handleBleCommand(const std::string &raw) {
             discardSessionIndexItem,
             nullptr);
         if (!ok) {
-            sendBleResp("sessions.list", ref, false, "SD_ERROR", "Failed to read session index", nullptr);
+            sendBleResp(ble, "sessions.list", ref, false, "SD_ERROR", "Failed to read session index", nullptr);
             return;
         }
 
-        sendBleResp("sessions.list", ref, true, "OK", "", [&](JsonObject out) {
+        sendBleResp(ble, "sessions.list", ref, true, "OK", "", [&](JsonObject out) {
             SessionIndexListCtx ctx{out.createNestedArray("items")};
-            liftrr::storage::storageReadSessionIndex(
+            storage.readSessionIndex(
                 (size_t)cursorIn,
                 (size_t)limitIn,
                 &nextCursor,
@@ -221,43 +227,43 @@ void handleBleCommand(const std::string &raw) {
     if (equalsIgnoreCase(name, "session.stream")) {
         const char *sidC = readStr(body, doc, "sessionId", "");
         if (!sidC || sidC[0] == '\0') {
-            sendBleResp("session.stream", ref, false, "BAD_ARGS", "Missing sessionId", nullptr);
+            sendBleResp(ble, "session.stream", ref, false, "BAD_ARGS", "Missing sessionId", nullptr);
             return;
         }
 
         if (!liftrr::comm::btClassicIsConnected()) {
-            sendBleResp("session.stream", ref, false, "NO_BT_CLASSIC", "Classic Bluetooth not connected", nullptr);
+            sendBleResp(ble, "session.stream", ref, false, "NO_BT_CLASSIC", "Classic Bluetooth not connected", nullptr);
             return;
         }
 
         String sessionId = String(sidC);
         String indexedName;
-        if (!liftrr::storage::storageFindSessionInIndex(sessionId, indexedName)) {
-            sendBleResp("session.stream", ref, false, "NOT_FOUND", "Session file not found", nullptr);
+        if (!storage.findSessionInIndex(sessionId, indexedName)) {
+            sendBleResp(ble, "session.stream", ref, false, "NOT_FOUND", "Session file not found", nullptr);
             return;
         }
 
         String path = String("/sessions/") + indexedName;
         if (!SD.exists(path)) {
-            sendBleResp("session.stream", ref, false, "NOT_FOUND", "Indexed file missing on SD", nullptr);
+            sendBleResp(ble, "session.stream", ref, false, "NOT_FOUND", "Indexed file missing on SD", nullptr);
             return;
         }
 
         File f = SD.open(path, FILE_READ);
         if (!f) {
-            sendBleResp("session.stream", ref, false, "SD_ERROR", "Failed to open session file", nullptr);
+            sendBleResp(ble, "session.stream", ref, false, "SD_ERROR", "Failed to open session file", nullptr);
             return;
         }
         size_t size = f.size();
         f.close();
 
-        sendBleResp("session.stream", ref, true, "OK", "", [&](JsonObject out) {
+        sendBleResp(ble, "session.stream", ref, true, "OK", "", [&](JsonObject out) {
             out["sessionId"] = sessionId;
             out["size"] = (uint32_t)size;
         });
 
         if (!liftrr::comm::btClassicStartFileStream(path, size, sessionId)) {
-            sendBleEvt("session.file.error", [&](JsonObject out) {
+            sendBleEvt(ble, "session.file.error", [&](JsonObject out) {
                 out["sessionId"] = sessionId;
                 out["code"] = "BT_CLASSIC_STREAM_FAILED";
             });
@@ -265,7 +271,7 @@ void handleBleCommand(const std::string &raw) {
         return;
     }
 
-    sendBleResp(name.c_str(), ref, false, "UNSUPPORTED", "Command not supported on this firmware", nullptr);
+    sendBleResp(ble, name.c_str(), ref, false, "UNSUPPORTED", "Command not supported on this firmware", nullptr);
 }
 
 } // namespace ble

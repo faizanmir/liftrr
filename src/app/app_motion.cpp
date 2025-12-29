@@ -1,39 +1,39 @@
 #include "app/app_motion.h"
-#include "core/globals.h"
 
 namespace liftrr {
 namespace app {
 
-void initMotionState(MotionState &state, unsigned long nowMs) {
-  state.lastMotionTime = nowMs;
-  state.lastRelDist = 0;
-  state.lastRoll = 0.0f;
-  state.lastPitch = 0.0f;
-  state.lastYaw = 0.0f;
+void MotionController::initMotionState(MotionState &state, unsigned long nowMs) {
+    state.lastMotionTime = nowMs;
+    state.lastRelDist = 0;
+    state.lastRoll = 0.0f;
+    state.lastPitch = 0.0f;
+    state.lastYaw = 0.0f;
 }
 
-void updateCalibrationFlags(const liftrr::sensors::SensorSample &sample, bool &isCalibrated) {
-  // Require system calibration >= 2 for "calibrated" status (0-3 scale)
-  // 3 is fully calibrated, but 2 is often usable.
-  isCalibrated = (sample.s >= 2);
+void MotionController::updateCalibrationStatus(const liftrr::sensors::SensorSample &sample,
+                                               liftrr::sensors::SensorManager &sensors) {
+    sensors.updateCalibrationStatus(sample);
 }
 
-void enforceCalibrationModeGuard(bool isCalibrated, bool laserValid,
-                                 liftrr::core::DeviceMode &deviceMode) {
-  if (deviceMode == liftrr::core::MODE_RUN) {
-    if (!isCalibrated) {
-      deviceMode = liftrr::core::MODE_CALIBRATE;
+void MotionController::enforceCalibrationModeGuard(const liftrr::sensors::SensorManager &sensors,
+                                                   liftrr::core::RuntimeState &runtime) {
+    liftrr::core::DeviceMode mode = runtime.deviceMode();
+    if (mode == liftrr::core::MODE_RUN) {
+        if (!sensors.isCalibrated()) {
+            runtime.setDeviceMode(liftrr::core::MODE_CALIBRATE);
+        }
+    } else if (mode == liftrr::core::MODE_CALIBRATE) {
+        if (sensors.isCalibrated() && sensors.laserValid()) {
+            runtime.setDeviceMode(liftrr::core::MODE_RUN);
+        }
     }
-  } else if (deviceMode == liftrr::core::MODE_CALIBRATE) {
-    if (isCalibrated && laserValid) {
-      deviceMode = liftrr::core::MODE_RUN;
-    }
-  }
 }
 
-void updateMotionAndMode(const liftrr::sensors::RelativePose &pose, unsigned long nowMs,
-                         MotionState &state, liftrr::core::DeviceMode &deviceMode,
-                         bool isCalibrated, bool laserValid) {
+void MotionController::updateMotionAndMode(const liftrr::sensors::RelativePose &pose,
+                                           unsigned long nowMs,
+                                           MotionState &state,
+                                           liftrr::core::RuntimeState &runtime) {
 
   // 1. Detect significant motion
   bool moved = false;
@@ -48,8 +48,8 @@ void updateMotionAndMode(const liftrr::sensors::RelativePose &pose, unsigned lon
     state.lastMotionTime = nowMs;
     
     // --- ADDED LOGIC: Wake up from IDLE ---
-    if (deviceMode == liftrr::core::MODE_IDLE) {
-      deviceMode = liftrr::core::MODE_RUN;
+    if (runtime.deviceMode() == liftrr::core::MODE_IDLE) {
+      runtime.setDeviceMode(liftrr::core::MODE_RUN);
     }
     // --------------------------------------
 
@@ -62,9 +62,9 @@ void updateMotionAndMode(const liftrr::sensors::RelativePose &pose, unsigned lon
   // 2. Auto-IDLE Timeout
   const unsigned long IDLE_TIMEOUT_MS = 30000;
 
-  if (deviceMode == liftrr::core::MODE_RUN) {
+  if (runtime.deviceMode() == liftrr::core::MODE_RUN) {
     if (nowMs - state.lastMotionTime > IDLE_TIMEOUT_MS) {
-      deviceMode = liftrr::core::MODE_IDLE;
+      runtime.setDeviceMode(liftrr::core::MODE_IDLE);
     }
   }
 }

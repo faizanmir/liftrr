@@ -1,187 +1,174 @@
-
 #include <Arduino.h>
-#include <SD.h>
 #include <ArduinoJson.h>
 
-#include "core/globals.h"
+#include "core/config.h"
 #include "storage/storage.h"
-#include "storage/storage_indicators.h"
-
-// SD card session logging.
 
 namespace liftrr {
 namespace storage {
 
-static bool   sdReady              = false;
-static bool   sessionActive        = false;
-static File   sessionFile;
-static String currentSessionId;
-static unsigned long lastSdFlushMs = 0;
+const char *const StorageManager::SESSION_INDEX_PATH = "/sessions/index.ndjson";
+const char *const StorageManager::SESSIONS_DIR_PATH = "/sessions";
 
-static const unsigned long SD_FLUSH_INTERVAL_MS = 1000; // 1s
-static const char *const SESSION_INDEX_PATH = "/sessions/index.ndjson";
-static const char *const SESSIONS_DIR_PATH = "/sessions";
+StorageManager::StorageManager(fs::SDFS &sd, void (*pulseFn)())
+    : sd_(sd),
+      pulse_fn_(pulseFn),
+      sd_ready_(false),
+      session_active_(false),
+      last_sd_flush_ms_(0) {}
 
-static File openForAppend(const char *path) {
-    // Many SD stacks don't define FILE_APPEND; FILE_WRITE typically appends.
-    File f = SD.open(path, FILE_WRITE);
+File StorageManager::openForAppend(const char *path) {
+    File f = sd_.open(path, FILE_WRITE);
     if (f) {
         f.seek(f.size());
     }
     return f;
 }
 
-static String basenameFromPath(const String &path) {
+String StorageManager::basenameFromPath(const String &path) {
     int slash = path.lastIndexOf('/');
     if (slash < 0) return path;
     return path.substring(slash + 1);
 }
 
-static uint64_t fileMtimeMs(File &) {
-    // NOTE: Not all Arduino SD / FS implementations expose a reliable mtime API.
-    // Keeping this portable avoids build breaks across cores/libraries.
+uint64_t StorageManager::fileMtimeMs(File &) {
     return 0;
 }
 
-// Initialize SD card (uses SD_CS).
-bool storageInitSd() {
-    if (sdReady) return true;
+void StorageManager::pulseIndicator() const {
+    if (pulse_fn_) pulse_fn_();
+}
 
-    if (!SD.begin(SD_CS)) {
+bool StorageManager::initSd() {
+    if (sd_ready_) return true;
+
+    if (!sd_.begin(SD_CS)) {
         Serial.println("SD init failed");
-        sdReady = false;
+        sd_ready_ = false;
         return false;
     }
 
-    // Ensure sessions directory exists
-    SD.mkdir(SESSIONS_DIR_PATH);
+    sd_.mkdir(SESSIONS_DIR_PATH);
 
-    sdReady = true;
+    sd_ready_ = true;
     Serial.println("SD init OK");
     return true;
 }
 
-// True if a session is active.
-bool storageIsSessionActive() {
-    return sessionActive;
+bool StorageManager::isSessionActive() const {
+    return session_active_;
 }
 
-// Start a session log at /sessions/<sessionId>.tmp (renamed to .csv on end).
-bool storageStartSession(const String& sessionId,
-                         const String& exercise,
-                         int16_t calibLaserOffset,
-                         float calibRollOffset,
-                         float calibPitchOffset,
-                         float calibYawOffset) {
-    pulseSDCardLED();
-    if (sessionActive) {
+bool StorageManager::startSession(const String &sessionId,
+                                  const String &exercise,
+                                  int16_t calibLaserOffset,
+                                  float calibRollOffset,
+                                  float calibPitchOffset,
+                                  float calibYawOffset) {
+    pulseIndicator();
+    if (session_active_) {
         Serial.println("storageStartSession: session already active.");
         return false;
     }
 
-    if (!storageInitSd()) {
+    if (!initSd()) {
         return false;
     }
 
-    currentSessionId = sessionId;
+    current_session_id_ = sessionId;
 
     String dir = SESSIONS_DIR_PATH;
-    SD.mkdir(dir);
+    sd_.mkdir(dir);
 
-    if (!SD.exists(SESSION_INDEX_PATH)) {
-        File idx = SD.open(SESSION_INDEX_PATH, FILE_WRITE);
+    if (!sd_.exists(SESSION_INDEX_PATH)) {
+        File idx = sd_.open(SESSION_INDEX_PATH, FILE_WRITE);
         if (idx) idx.close();
     }
 
     String tmpPath = dir + "/" + sessionId + ".tmp";
 
-    sessionFile = SD.open(tmpPath, FILE_WRITE);
-    if (!sessionFile) {
+    session_file_ = sd_.open(tmpPath, FILE_WRITE);
+    if (!session_file_) {
         Serial.print("storageStartSession: failed to open ");
         Serial.println(tmpPath);
-        currentSessionId = "";
+        current_session_id_ = "";
         return false;
     }
 
-    // Basic header (comment lines starting with '#')
-    sessionFile.println("# liftrr session");
-    sessionFile.print("# session_id="); sessionFile.println(sessionId);
-    sessionFile.print("# exercise=");   sessionFile.println(exercise);
-    sessionFile.print("# calib_laserOffset="); sessionFile.println(calibLaserOffset);
-    sessionFile.print("# calib_rollOffset=");  sessionFile.println(calibRollOffset);
-    sessionFile.print("# calib_pitchOffset="); sessionFile.println(calibPitchOffset);
-    sessionFile.print("# calib_yawOffset=");   sessionFile.println(calibYawOffset);
+    session_file_.println("# liftrr session");
+    session_file_.print("# session_id="); session_file_.println(sessionId);
+    session_file_.print("# exercise=");   session_file_.println(exercise);
+    session_file_.print("# calib_laserOffset="); session_file_.println(calibLaserOffset);
+    session_file_.print("# calib_rollOffset=");  session_file_.println(calibRollOffset);
+    session_file_.print("# calib_pitchOffset="); session_file_.println(calibPitchOffset);
+    session_file_.print("# calib_yawOffset=");   session_file_.println(calibYawOffset);
 
-    // CSV header
-    sessionFile.println("timestamp_ms,dist_mm,relDist_mm,roll_deg,pitch_deg,yaw_deg");
-    sessionFile.flush();
-    sessionActive   = true;
-    lastSdFlushMs   = millis();
+    session_file_.println("timestamp_ms,dist_mm,relDist_mm,roll_deg,pitch_deg,yaw_deg");
+    session_file_.flush();
+    session_active_ = true;
+    last_sd_flush_ms_ = millis();
 
     Serial.print("Session started: ");
     Serial.println(tmpPath);
-    pulseSDCardLED();
+    pulseIndicator();
     return true;
 }
 
-// Append a single sample to the active session.
-bool storageLogSample(int64_t timestampMs,
-                      int16_t distMm,
-                      int16_t relDistMm,
-                      float rollDeg,
-                      float pitchDeg,
-                      float yawDeg) {
-    if (!sessionActive || !sessionFile) return false;
-    if (!sdReady) return false;
-    pulseSDCardLED();
-    sessionFile.print((long long)timestampMs);
-    sessionFile.print(",");
-    sessionFile.print(distMm);
-    sessionFile.print(",");
-    sessionFile.print(relDistMm);
-    sessionFile.print(",");
-    sessionFile.print(rollDeg, 3);
-    sessionFile.print(",");
-    sessionFile.print(pitchDeg, 3);
-    sessionFile.print(",");
-    sessionFile.println(yawDeg, 3);
+bool StorageManager::logSample(int64_t timestampMs,
+                               int16_t distMm,
+                               int16_t relDistMm,
+                               float rollDeg,
+                               float pitchDeg,
+                               float yawDeg) {
+    if (!session_active_ || !session_file_) return false;
+    if (!sd_ready_) return false;
+    pulseIndicator();
+    session_file_.print((long long)timestampMs);
+    session_file_.print(",");
+    session_file_.print(distMm);
+    session_file_.print(",");
+    session_file_.print(relDistMm);
+    session_file_.print(",");
+    session_file_.print(rollDeg, 3);
+    session_file_.print(",");
+    session_file_.print(pitchDeg, 3);
+    session_file_.print(",");
+    session_file_.println(yawDeg, 3);
 
     unsigned long now = millis();
-    if (now - lastSdFlushMs > SD_FLUSH_INTERVAL_MS) {
-        sessionFile.flush();
-        lastSdFlushMs = now;
+    if (now - last_sd_flush_ms_ > SD_FLUSH_INTERVAL_MS) {
+        session_file_.flush();
+        last_sd_flush_ms_ = now;
     }
-    pulseSDCardLED();
+    pulseIndicator();
 
     return true;
 }
 
-// Finalize current session (.tmp -> .csv).
-bool storageEndSession() {
-    pulseSDCardLED();
-    if (!sessionActive) {
+bool StorageManager::endSession() {
+    pulseIndicator();
+    if (!session_active_) {
         Serial.println("storageEndSession: no active session.");
         return false;
     }
 
-    if (!sdReady) {
-        sessionActive = false;
-        currentSessionId = "";
+    if (!sd_ready_) {
+        session_active_ = false;
+        current_session_id_ = "";
         return false;
     }
 
-    if (sessionFile) {
-        sessionFile.flush();
-        sessionFile.close();
+    if (session_file_) {
+        session_file_.flush();
+        session_file_.close();
     }
 
     String dir = "/sessions";
-    String tmpPath   = dir + "/" + currentSessionId + ".tmp";
-    String finalPath = dir + "/" + currentSessionId + ".csv";
+    String tmpPath   = dir + "/" + current_session_id_ + ".tmp";
+    String finalPath = dir + "/" + current_session_id_ + ".csv";
 
-    // Try to rename; if it fails, we at least logged to the tmp file.
-    if (SD.exists(tmpPath)) {
-        if (!SD.rename(tmpPath, finalPath)) {
+    if (sd_.exists(tmpPath)) {
+        if (!sd_.rename(tmpPath, finalPath)) {
             Serial.println("storageEndSession: rename failed, leaving .tmp file.");
         } else {
             Serial.print("Session finalized: ");
@@ -190,11 +177,11 @@ bool storageEndSession() {
     }
 
     String indexPath;
-    if (SD.exists(finalPath)) indexPath = finalPath;
-    else if (SD.exists(tmpPath)) indexPath = tmpPath;
+    if (sd_.exists(finalPath)) indexPath = finalPath;
+    else if (sd_.exists(tmpPath)) indexPath = tmpPath;
 
     if (indexPath.length()) {
-        File f = SD.open(indexPath, FILE_READ);
+        File f = sd_.open(indexPath, FILE_READ);
         if (f) {
             uint32_t size = f.size();
             uint64_t mtimeMs = fileMtimeMs(f);
@@ -216,28 +203,28 @@ bool storageEndSession() {
         }
     }
 
-    sessionActive = false;
-    currentSessionId = "";
-    pulseSDCardLED();
+    session_active_ = false;
+    current_session_id_ = "";
+    pulseIndicator();
     return true;
 }
 
-bool storageReadSessionIndex(size_t cursor,
-                             size_t maxItems,
-                             size_t *nextCursor,
-                             bool *hasMore,
-                             StorageSessionIndexCallback cb,
-                             void *ctx) {
+bool StorageManager::readSessionIndex(size_t cursor,
+                                      size_t maxItems,
+                                      size_t *nextCursor,
+                                      bool *hasMore,
+                                      SessionIndexCallback cb,
+                                      void *ctx) {
     if (nextCursor) *nextCursor = cursor;
     if (hasMore) *hasMore = false;
     if (!cb) return false;
-    if (!storageInitSd()) return false;
+    if (!initSd()) return false;
 
-    if (!SD.exists(SESSION_INDEX_PATH)) {
+    if (!sd_.exists(SESSION_INDEX_PATH)) {
         return false;
-    } 
+    }
 
-    File idx = SD.open(SESSION_INDEX_PATH, FILE_READ);
+    File idx = sd_.open(SESSION_INDEX_PATH, FILE_READ);
     if (!idx) return false;
 
     size_t lineIndex = 0;
@@ -264,7 +251,6 @@ bool storageReadSessionIndex(size_t cursor,
         JsonDocument doc;
         DeserializationError err = deserializeJson(doc, line);
         if (err) {
-            // Skip malformed lines but still advance the cursor so we don't loop forever.
             lastIncludedLine = lineIndex + 1;
             lineIndex++;
             continue;
@@ -292,12 +278,12 @@ bool storageReadSessionIndex(size_t cursor,
     return true;
 }
 
-bool storageFindSessionInIndex(const String &sessionId, String &outName) {
+bool StorageManager::findSessionInIndex(const String &sessionId, String &outName) {
     outName = "";
-    if (!storageInitSd()) return false;
-    if (!SD.exists(SESSION_INDEX_PATH)) return false;
+    if (!initSd()) return false;
+    if (!sd_.exists(SESSION_INDEX_PATH)) return false;
 
-    File idx = SD.open(SESSION_INDEX_PATH, FILE_READ);
+    File idx = sd_.open(SESSION_INDEX_PATH, FILE_READ);
     if (!idx) return false;
 
     String wantCsv = sessionId + ".csv";
@@ -335,17 +321,17 @@ bool storageFindSessionInIndex(const String &sessionId, String &outName) {
     return false;
 }
 
-bool storageRebuildSessionIndex(size_t *outCount) {
+bool StorageManager::rebuildSessionIndex(size_t *outCount) {
     if (outCount) *outCount = 0;
-    if (!storageInitSd()) return false;
+    if (!initSd()) return false;
 
-    File dir = SD.open(SESSIONS_DIR_PATH);
+    File dir = sd_.open(SESSIONS_DIR_PATH);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         return false;
     }
 
-    File idx = SD.open(SESSION_INDEX_PATH, FILE_WRITE);
+    File idx = sd_.open(SESSION_INDEX_PATH, FILE_WRITE);
     if (!idx) {
         dir.close();
         return false;

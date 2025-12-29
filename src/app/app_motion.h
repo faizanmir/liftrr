@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "core/config.h"
 #include "sensors/sensors.h"
+#include "core/globals.h"
 
 namespace liftrr {
 namespace app {
@@ -15,17 +16,18 @@ struct MotionState {
     float lastYaw = 0.0f;
 };
 
-void initMotionState(MotionState &state, unsigned long nowMs);
-void updateCalibrationFlags(const liftrr::sensors::SensorSample &sample, bool &isCalibrated);
-void enforceCalibrationModeGuard(bool isCalibrated,
-                                 bool laserValid,
-                                 liftrr::core::DeviceMode &deviceMode);
-void updateMotionAndMode(const liftrr::sensors::RelativePose &pose,
-                         unsigned long nowMs,
-                         MotionState &state,
-                         liftrr::core::DeviceMode &deviceMode,
-                         bool isCalibrated,
-                         bool laserValid);
+class MotionController {
+public:
+    void initMotionState(MotionState &state, unsigned long nowMs);
+    void updateCalibrationStatus(const liftrr::sensors::SensorSample &sample,
+                                 liftrr::sensors::SensorManager &sensors);
+    void enforceCalibrationModeGuard(const liftrr::sensors::SensorManager &sensors,
+                                     liftrr::core::RuntimeState &runtime);
+    void updateMotionAndMode(const liftrr::sensors::RelativePose &pose,
+                             unsigned long nowMs,
+                             MotionState &state,
+                             liftrr::core::RuntimeState &runtime);
+};
 
 } // namespace app
 } // namespace liftrr

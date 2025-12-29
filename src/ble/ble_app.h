@@ -1,15 +1,12 @@
 #pragma once
 
+#include "ble/ble.h"
+#include "core/globals.h"
 #include "sensors/sensors.h"
+#include "storage/storage.h"
 
 namespace liftrr {
 namespace ble {
-
-// Call once from setup.
-void bleAppInit();
-
-// Call each loop iteration.
-void bleAppLoop();
 
 // Interface for mode changes.
 struct IModeApplier {
@@ -18,13 +15,27 @@ struct IModeApplier {
   virtual void applyMode(const char* mode) = 0;
 };
 
-// Register an optional mode applier.
-void bleAppSetModeApplier(IModeApplier* applier);
+class BleApp {
+public:
+  BleApp(liftrr::ble::BleManager &ble,
+         liftrr::core::RuntimeState &runtime,
+         liftrr::sensors::SensorManager &sensors,
+         liftrr::storage::StorageManager &storage);
+  ~BleApp();
 
-// Notify orientation status.
-void bleAppNotifyFacing(liftrr::sensors::DeviceFacing facing);
+  void init();
+  void loop();
 
-// Notify calibration success.
-void bleAppNotifyCalibration(bool imuCalibrated, bool laserValid);
+  void setModeApplier(IModeApplier *applier);
+  void notifyFacing(liftrr::sensors::DeviceFacing facing);
+  void notifyCalibration(bool imuCalibrated, bool laserValid);
+
+private:
+  liftrr::ble::BleManager &ble_;
+  liftrr::core::RuntimeState &runtime_;
+  liftrr::sensors::SensorManager &sensors_;
+  liftrr::storage::StorageManager &storage_;
+  BleCallbacks *callbacks_;
+};
 } // namespace ble
 } // namespace liftrr
