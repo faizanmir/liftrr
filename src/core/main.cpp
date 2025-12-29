@@ -26,8 +26,9 @@ static liftrr::sensors::Vl53l1xSensor gLaserAdapter(gLaser, 0x29, &Wire, true);
 static liftrr::sensors::SensorManager gSensorManager(gImuAdapter, gLaserAdapter);
 static liftrr::storage::StorageManager gStorageManager(SD, liftrr::storage::pulseSDCardLED);
 static liftrr::core::RuntimeState gRuntimeState;
+static liftrr::comm::BtClassicManager gBtClassic(SD);
 static liftrr::ble::BleManager gBleManager;
-static liftrr::ble::BleApp gBleApp(gBleManager, gRuntimeState, gSensorManager, gStorageManager);
+static liftrr::ble::BleApp gBleApp(gBleManager, gRuntimeState, gSensorManager, gStorageManager, gBtClassic);
 static liftrr::ui::UiRenderer gUi(gDisplay, gSensorManager);
 static liftrr::app::DisplayManager gDisplayManager(
     gDisplay, gUi, gStorageManager, gBleManager, gSensorManager, gRuntimeState);
@@ -103,13 +104,13 @@ void setup() {
   gBleApp.setModeApplier(&gModeApplier);
 
   // 9. Classic Bluetooth
-  liftrr::comm::btClassicInit("LIFTRR");
+  gBtClassic.init("LIFTRR");
 }
 
 void loop() {
   gSerialHandler.handleSerialCommands(gMotionState);
   gBleApp.loop(); // BLE periodic work
-  liftrr::comm::btClassicLoop();
+  gBtClassic.loop();
 
   unsigned long currentMillis = millis();
   int64_t sessionTimestampMs = liftrr::core::currentEpochMs();

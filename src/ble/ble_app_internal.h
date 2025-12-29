@@ -10,18 +10,6 @@
 namespace liftrr {
 namespace ble {
 
-extern IModeApplier* gModeApplier;
-
-extern bool gPendingSessionStart;
-extern String gPendingSessionId;
-extern String gPendingLift;
-
-void clearPendingSession();
-
-extern bool gPendingTimeSync;
-extern uint32_t gTimeSyncRequestedMs;
-extern const uint32_t kTimeSyncTimeoutMs;
-
 void sendBleResp(
         liftrr::ble::BleManager &ble,
         const char *name,
@@ -56,12 +44,6 @@ bool appendSessionIndexItem(const char *name,
 
 const char* readStr(JsonObject body, JsonDocument &doc, const char *key, const char *defVal);
 int64_t readI64(JsonObject body, JsonDocument &doc, const char *key, int64_t defVal);
-
-void handleBleCommand(liftrr::ble::BleManager &ble,
-                      liftrr::core::RuntimeState &runtime,
-                      liftrr::sensors::SensorManager &sensors,
-                      liftrr::storage::StorageManager &storage,
-                      const std::string &raw);
 
 } // namespace ble
 } // namespace liftrr

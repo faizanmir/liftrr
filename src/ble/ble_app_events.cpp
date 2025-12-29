@@ -3,63 +3,48 @@
 #include <Arduino.h>
 
 #include "ble.h"
-#include "comm/bt_classic.h"
-
 namespace liftrr {
 namespace ble {
 
 class AppBleCallbacks : public BleCallbacks {
 public:
-    AppBleCallbacks(BleManager &ble,
-                    liftrr::core::RuntimeState &runtime,
-                    liftrr::sensors::SensorManager &sensors,
-                    liftrr::storage::StorageManager &storage)
-        : ble_(ble), runtime_(runtime), sensors_(sensors), storage_(storage) {}
+    explicit AppBleCallbacks(BleApp &app) : app_(app) {}
 
     void onRawCommand(const std::string &raw) override {
         Serial.println("[BLE] Command received:");
         Serial.println(raw.c_str());
-        handleBleCommand(ble_, runtime_, sensors_, storage_, raw);
+        app_.handleRawCommand(raw);
     }
 
     void onConnected() override {
-        Serial.println("[BLE] Client connected");
-        ble_.sendStatus(F("{\"event\":\"CONNECTED\"}"));
-        gPendingTimeSync = true;
-        gTimeSyncRequestedMs = millis();
-        sendBleEvt(ble_, "time.sync.request", [&](JsonObject out) {
-            out["timeoutMs"] = kTimeSyncTimeoutMs;
-        });
-
-        if (!liftrr::comm::btClassicIsConnected()) {
-            liftrr::comm::btClassicInit("LIFTRR");
-            sendBleEvt(ble_, "bt_classic.required", [&](JsonObject out) {
-                out["status"] = "not_connected";
-            });
-        }
+        app_.onConnected();
     }
 
     void onDisconnected() override {
-        Serial.println("[BLE] Client disconnected");
-        gPendingTimeSync = false;
+        app_.onDisconnected();
     }
 
 private:
-    BleManager &ble_;
-    liftrr::core::RuntimeState &runtime_;
-    liftrr::sensors::SensorManager &sensors_;
-    liftrr::storage::StorageManager &storage_;
+    BleApp &app_;
 };
 
 BleApp::BleApp(liftrr::ble::BleManager &ble,
                liftrr::core::RuntimeState &runtime,
                liftrr::sensors::SensorManager &sensors,
-               liftrr::storage::StorageManager &storage)
+               liftrr::storage::StorageManager &storage,
+               liftrr::comm::BtClassicManager &btClassic)
     : ble_(ble),
       runtime_(runtime),
       sensors_(sensors),
       storage_(storage),
-      callbacks_(new AppBleCallbacks(ble_, runtime_, sensors_, storage_)) {}
+      bt_classic_(btClassic),
+      callbacks_(new AppBleCallbacks(*this)),
+      mode_applier_(nullptr),
+      pending_session_start_(false),
+      pending_session_id_(""),
+      pending_lift_(""),
+      pending_time_sync_(false),
+      time_sync_requested_ms_(0) {}
 
 BleApp::~BleApp() {
     delete callbacks_;
@@ -74,33 +59,61 @@ void BleApp::init() {
     ble_.begin(bleCfg, callbacks_);
 }
 
+void BleApp::onConnected() {
+    Serial.println("[BLE] Client connected");
+    ble_.sendStatus(F("{\"event\":\"CONNECTED\"}"));
+    pending_time_sync_ = true;
+    time_sync_requested_ms_ = millis();
+    sendBleEvt(ble_, "time.sync.request", [&](JsonObject out) {
+        out["timeoutMs"] = kTimeSyncTimeoutMs;
+    });
+
+    if (!bt_classic_.isConnected()) {
+        bt_classic_.init("LIFTRR");
+        sendBleEvt(ble_, "bt_classic.required", [&](JsonObject out) {
+            out["status"] = "not_connected";
+        });
+    }
+}
+
+void BleApp::onDisconnected() {
+    Serial.println("[BLE] Client disconnected");
+    pending_time_sync_ = false;
+}
+
+void BleApp::clearPendingSession() {
+    pending_session_start_ = false;
+    pending_session_id_ = "";
+    pending_lift_ = "";
+}
+
 void BleApp::loop() {
     ble_.loop();
 
-    if (gPendingTimeSync &&
-        (millis() - gTimeSyncRequestedMs) >= kTimeSyncTimeoutMs) {
-        gPendingTimeSync = false;
+    if (pending_time_sync_ &&
+        (millis() - time_sync_requested_ms_) >= kTimeSyncTimeoutMs) {
+        pending_time_sync_ = false;
         sendBleEvt(ble_, "time.sync.timeout", [&](JsonObject out) {
             out["timeoutMs"] = kTimeSyncTimeoutMs;
         });
     }
 
-    if (gPendingSessionStart &&
+    if (pending_session_start_ &&
         runtime_.deviceMode() == liftrr::core::MODE_RUN &&
         !storage_.isSessionActive() &&
         sensors_.isCalibrated() &&
         sensors_.laserValid()) {
 
-        storage_.startSession(gPendingSessionId,
-                              gPendingLift.length() ? gPendingLift.c_str() : "unknown",
+        storage_.startSession(pending_session_id_,
+                              pending_lift_.length() ? pending_lift_.c_str() : "unknown",
                               sensors_.laserOffset(),
                               sensors_.rollOffset(),
                               sensors_.pitchOffset(),
                               sensors_.yawOffset());
 
         sendBleEvt(ble_, "session.started", [&](JsonObject out) {
-            out["sessionId"] = gPendingSessionId;
-            out["lift"]      = gPendingLift;
+            out["sessionId"] = pending_session_id_;
+            out["lift"]      = pending_lift_;
             out["auto"]      = true;
         });
 
@@ -109,7 +122,7 @@ void BleApp::loop() {
 }
 
 void BleApp::setModeApplier(IModeApplier* applier) {
-    gModeApplier = applier;
+    mode_applier_ = applier;
 }
 
 void BleApp::notifyFacing(liftrr::sensors::DeviceFacing facing) {

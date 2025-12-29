@@ -1,95 +1,85 @@
 #include "comm/bt_classic.h"
 
-#include <BluetoothSerial.h>
 #include <SD.h>
 #include <ArduinoJson.h>
+#include "bt_classic.h"
 
 namespace liftrr {
 namespace comm {
 
-static BluetoothSerial gBtSerial;
-static bool gBtReady = false;
+BtClassicManager::BtClassicManager(fs::SDFS &sd)
+    : sd_(sd), bt_ready_(false) {}
 
-struct BtStreamState {
-    bool active = false;
-    File file;
-    size_t offset = 0;
-    size_t size = 0;
-    String sessionId;
-};
-
-static BtStreamState gStream;
-
-static void sendEventLine(const char *eventName,
-                          const String &sessionId,
-                          size_t size) {
+void BtClassicManager::sendEventLine(const char *eventName,
+                                     const String &sessionId,
+                                     size_t size) {
     JsonDocument doc;
     doc["event"] = eventName;
     doc["sessionId"] = sessionId;
     doc["size"] = (uint32_t)size;
     String line;
     serializeJson(doc, line);
-    gBtSerial.println(line);
+    bt_serial_.println(line);
 }
 
-bool btClassicInit(const char *deviceName) {
-    if (gBtReady) return true;
+bool BtClassicManager::init(const char *deviceName) {
+    if (bt_ready_) return true;
     if (!deviceName || deviceName[0] == '\0') {
         deviceName = "LIFTRR";
     }
-    gBtReady = gBtSerial.begin(deviceName);
-    return gBtReady;
+    bt_ready_ = bt_serial_.begin(deviceName);
+    return bt_ready_;
 }
 
-bool btClassicIsConnected() {
-    return gBtReady && gBtSerial.hasClient();
+bool BtClassicManager::isConnected() {
+    return bt_ready_ && bt_serial_.hasClient();
 }
 
-bool btClassicStartFileStream(const String &path,
-                              size_t size,
-                              const String &sessionId) {
-    if (!btClassicIsConnected()) return false;
-    if (gStream.active) return false;
-    if (!SD.exists(path)) return false;
+bool BtClassicManager::startFileStream(const String &path,
+                                       size_t size,
+                                       const String &sessionId) {
+    if (!isConnected()) return false;
+    if (stream_.active) return false;
+    if (!sd_.exists(path)) return false;
 
-    File f = SD.open(path, FILE_READ);
+    File f = sd_.open(path, FILE_READ);
     if (!f) return false;
 
-    gStream.file = f;
-    gStream.active = true;
-    gStream.offset = 0;
-    gStream.size = size;
-    gStream.sessionId = sessionId;
+    stream_.file = f;
+    stream_.active = true;
+    stream_.offset = 0;
+    stream_.size = size;
+    stream_.sessionId = sessionId;
 
     sendEventLine("session.file.start", sessionId, size);
     return true;
 }
 
-void btClassicLoop() {
-    if (!gStream.active) return;
-    if (!btClassicIsConnected()) {
-        if (gStream.file) gStream.file.close();
-        gStream = BtStreamState{};
+void BtClassicManager::loop() {
+    if (!stream_.active) return;
+    if (!isConnected()) {
+        if (stream_.file) stream_.file.close();
+        stream_ = BtStreamState{};
         return;
     }
 
-    if (!gStream.file) {
-        gStream = BtStreamState{};
+    if (!stream_.file) {
+        stream_ = BtStreamState{};
         return;
     }
 
     const size_t kChunkSize = 512;
     uint8_t buf[kChunkSize];
-    size_t n = gStream.file.read(buf, kChunkSize);
+    size_t n = stream_.file.read(buf, kChunkSize);
     if (n > 0) {
-        gBtSerial.write(buf, n);
-        gStream.offset += n;
+        bt_serial_.write(buf, n);
+        stream_.offset += n;
     }
 
-    if (n == 0 || gStream.offset >= gStream.size || !gStream.file.available()) {
-        if (gStream.file) gStream.file.close();
-        sendEventLine("session.file.end", gStream.sessionId, gStream.offset);
-        gStream = BtStreamState{};
+    if (n == 0 || stream_.offset >= stream_.size || !stream_.file.available()) {
+        if (stream_.file) stream_.file.close();
+        sendEventLine("session.file.end", stream_.sessionId, stream_.offset);
+        stream_ = BtStreamState{};
     }
 }
 
