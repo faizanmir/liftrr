@@ -33,7 +33,7 @@ static liftrr::ui::UiRenderer gUi(gDisplay, gSensorManager);
 static liftrr::app::DisplayManager gDisplayManager(
     gDisplay, gUi, gStorageManager, gBleManager, gSensorManager, gRuntimeState);
 static liftrr::app::SerialCommandHandler gSerialHandler(
-    gRuntimeState, gStorageManager, gSensorManager);
+    gRuntimeState, gStorageManager, gSensorManager, gBtClassic);
 
 struct ModeApplier : liftrr::ble::IModeApplier {
   ModeApplier(liftrr::core::RuntimeState &runtime, liftrr::app::MotionState *state)
