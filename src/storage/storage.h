@@ -26,6 +26,7 @@ public:
                       float calibRollOffset,
                       float calibPitchOffset,
                       float calibYawOffset);
+    String buildSessionId(const String &exercise, int64_t epochMs) const;
 
     bool logSample(int64_t timestampMs,
                    int16_t distMm,
@@ -35,6 +36,7 @@ public:
                    float yawDeg);
 
     bool endSession();
+    bool clearSessions();
 
     bool readSessionIndex(size_t cursor,
                           size_t maxItems,

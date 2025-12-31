@@ -78,6 +78,13 @@ static int64_t readI64(JsonObject body, JsonDocument &doc, const char *key, int6
     return doc[key] | defVal;
 }
 
+static void applyPhoneEpoch(JsonObject body, JsonDocument &doc) {
+    int64_t phoneEpoch = readI64(body, doc, "phoneEpochMs", (int64_t)0);
+    if (phoneEpoch > 0) {
+        liftrr::core::timeSyncSetEpochMs(phoneEpoch);
+    }
+}
+
 void SerialCommandHandler::clearPendingSession() {
     pending_session_start_ = false;
     pending_session_id_ = "";
@@ -120,6 +127,7 @@ void SerialCommandHandler::handleSerialCommands(MotionState &motionState) {
     // {"id":"6","name":"session.end","body":{}}
     // {"id":"7","name":"sessions.list","body":{"cursor":0,"limit":15}}
     // {"id":"8","name":"session.stream","body":{"sessionId":"1710000000000"}}
+    // {"id":"9","name":"sessions.clear","body":{}}
     // Notes: use "Newline" line ending; send one JSON per line.
     if (Serial.peek() == '{') {
         String line = Serial.readStringUntil('\n');
@@ -153,7 +161,7 @@ void SerialCommandHandler::handleSerialCommands(MotionState &motionState) {
         case 's': {
             // Start a session with a simple auto-generated ID
             int64_t epoch = liftrr::core::currentEpochMs();
-            String sid = (epoch > 0) ? String((long long)epoch) : String(millis());
+            String sid = storage_.buildSessionId("lift", epoch);
             if (storage_.isSessionActive()) {
                 Serial.println("Session already active, cannot start new one.");
                 break;
@@ -224,6 +232,19 @@ void SerialCommandHandler::handleSerialCommands(MotionState &motionState) {
             break;
         }
 
+        case 'x': {
+            if (storage_.isSessionActive()) {
+                Serial.println("Session active; end it before clearing.");
+                break;
+            }
+            if (!storage_.clearSessions()) {
+                Serial.println("Failed to clear sessions.");
+            } else {
+                Serial.println("All sessions cleared.");
+            }
+            break;
+        }
+
         case 'd': {
             liftrr::sensors::SensorSample sample;
             sensors_.read(sample);
@@ -261,6 +282,7 @@ void SerialCommandHandler::handleJsonCommand(const String &line) {
 
     const char *ref = doc["id"] | "";
     JsonObject body = doc["body"].is<JsonObject>() ? doc["body"].as<JsonObject>() : JsonObject();
+    applyPhoneEpoch(body, doc);
 
     if (name.length() == 0) {
         sendSerialResp("unknown", ref, false, "MISSING_NAME", "Missing 'name' (or legacy 'cmd')", nullptr);
@@ -352,14 +374,8 @@ void SerialCommandHandler::handleJsonCommand(const String &line) {
         runtime_.setDeviceMode(liftrr::core::MODE_RUN);
 
         const char *liftC = readStr(body, doc, "lift", "unknown");
-        const char *sidC  = readStr(body, doc, "sessionId", (const char*)nullptr);
-
-        String sid;
-        if (sidC && sidC[0] != '\0') sid = String(sidC);
-        else {
-            int64_t e = liftrr::core::currentEpochMs();
-            sid = (e > 0) ? String((long long)e) : String(millis());
-        }
+        int64_t e = liftrr::core::currentEpochMs();
+        String sid = storage_.buildSessionId(liftC, e);
 
         if (!sensors_.isCalibrated() || !sensors_.laserValid()) {
             pending_session_start_ = true;
@@ -465,6 +481,10 @@ void SerialCommandHandler::handleJsonCommand(const String &line) {
         }
 
         String sessionId = String(sidC);
+        if (sessionId.endsWith(".csv") || sessionId.endsWith(".tmp")) {
+            int dot = sessionId.lastIndexOf('.');
+            if (dot > 0) sessionId = sessionId.substring(0, dot);
+        }
         String indexedName;
         if (!storage_.findSessionInIndex(sessionId, indexedName)) {
             sendSerialResp("session.stream", ref, false, "NOT_FOUND", "Session file not found", nullptr);
@@ -496,6 +516,23 @@ void SerialCommandHandler::handleJsonCommand(const String &line) {
                 out["code"] = "BT_CLASSIC_STREAM_FAILED";
             });
         }
+        return;
+    }
+
+    if (name.equalsIgnoreCase("sessions.clear")) {
+        if (storage_.isSessionActive()) {
+            sendSerialResp("sessions.clear", ref, false, "SESSION_ACTIVE",
+                           "End the active session before clearing.", nullptr);
+            return;
+        }
+
+        if (!storage_.clearSessions()) {
+            sendSerialResp("sessions.clear", ref, false, "SD_ERROR",
+                           "Failed to clear sessions.", nullptr);
+            return;
+        }
+
+        sendSerialResp("sessions.clear", ref, true, "OK", "", nullptr);
         return;
     }
 

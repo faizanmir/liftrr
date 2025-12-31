@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <ctype.h>
 
 #include "core/config.h"
 #include "storage/storage.h"
@@ -16,6 +17,101 @@ StorageManager::StorageManager(fs::SDFS &sd, void (*pulseFn)())
       sd_ready_(false),
       session_active_(false),
       last_sd_flush_ms_(0) {}
+
+static bool isLeapYear(int year) {
+    if ((year % 4) != 0) return false;
+    if ((year % 100) != 0) return true;
+    return (year % 400) == 0;
+}
+
+static int daysInMonth(int year, int month) {
+    static const int kDays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    if (month == 2 && isLeapYear(year)) return 29;
+    return kDays[month - 1];
+}
+
+static void formatEpochMs(int64_t epochMs, char *out, size_t outLen) {
+    int64_t totalSeconds = epochMs / 1000;
+    if (totalSeconds < 0) totalSeconds = 0;
+
+    int64_t days = totalSeconds / 86400;
+    int64_t secondsOfDay = totalSeconds % 86400;
+
+    int hour = (int)(secondsOfDay / 3600);
+    int minute = (int)((secondsOfDay % 3600) / 60);
+    int second = (int)(secondsOfDay % 60);
+
+    int year = 1970;
+    while (true) {
+        int daysInYear = isLeapYear(year) ? 366 : 365;
+        if (days >= daysInYear) {
+            days -= daysInYear;
+            year++;
+        } else {
+            break;
+        }
+    }
+
+    int month = 1;
+    while (month <= 12) {
+        int dim = daysInMonth(year, month);
+        if (days >= dim) {
+            days -= dim;
+            month++;
+        } else {
+            break;
+        }
+    }
+
+    int day = (int)days + 1;
+    snprintf(out, outLen, "%02d-%02d-%04d-%02d-%02d-%02d",
+             day, month, year, hour, minute, second);
+}
+
+static void sanitizeLiftName(const String &in, char *out, size_t outLen) {
+    if (outLen == 0) return;
+    size_t j = 0;
+    bool lastDash = false;
+
+    for (size_t i = 0; i < in.length() && j + 1 < outLen; i++) {
+        char c = in.charAt(i);
+        if (isalnum(static_cast<unsigned char>(c))) {
+            out[j++] = c;
+            lastDash = false;
+        } else {
+            if (!lastDash && j + 1 < outLen) {
+                out[j++] = '-';
+                lastDash = true;
+            }
+        }
+    }
+
+    if (j > 0 && out[j - 1] == '-') {
+        j--;
+    }
+
+    if (j == 0) {
+        const char *fallback = "UNKNOWN";
+        while (fallback[j] != '\0' && j + 1 < outLen) {
+            out[j] = fallback[j];
+            j++;
+        }
+    }
+
+    out[j] = '\0';
+}
+
+String StorageManager::buildSessionId(const String &exercise, int64_t epochMs) const {
+    char timestamp[32];
+    char lift[32];
+    formatEpochMs(epochMs, timestamp, sizeof(timestamp));
+    sanitizeLiftName(exercise, lift, sizeof(lift));
+    String out = String(timestamp);
+    out += "-";
+    out += lift;
+    out += "-LIFTRR";
+    return out;
+}
 
 File StorageManager::openForAppend(const char *path) {
     File f = sd_.open(path, FILE_WRITE);
@@ -205,6 +301,45 @@ bool StorageManager::endSession() {
 
     session_active_ = false;
     current_session_id_ = "";
+    pulseIndicator();
+    return true;
+}
+
+bool StorageManager::clearSessions() {
+    pulseIndicator();
+    if (session_active_) {
+        Serial.println("storageClearSessions: session active, aborting.");
+        return false;
+    }
+
+    if (!initSd()) {
+        return false;
+    }
+
+    if (sd_.exists(SESSION_INDEX_PATH)) {
+        sd_.remove(SESSION_INDEX_PATH);
+    }
+
+    File dir = sd_.open(SESSIONS_DIR_PATH);
+    if (!dir || !dir.isDirectory()) {
+        if (dir) dir.close();
+        return false;
+    }
+
+    File entry = dir.openNextFile();
+    while (entry) {
+        if (!entry.isDirectory()) {
+            String name = basenameFromPath(String(entry.name()));
+            entry.close();
+            String path = String(SESSIONS_DIR_PATH) + "/" + name;
+            sd_.remove(path);
+        } else {
+            entry.close();
+        }
+        entry = dir.openNextFile();
+    }
+
+    dir.close();
     pulseIndicator();
     return true;
 }

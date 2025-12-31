@@ -9,6 +9,8 @@
 namespace liftrr {
 namespace ble {
 
+class BleCommandBase;
+
 // Interface for mode changes.
 struct IModeApplier {
   virtual ~IModeApplier() = default;
@@ -39,6 +41,7 @@ private:
   void clearPendingSession();
 
   friend class AppBleCallbacks;
+  friend class BleCommandBase;
 
   liftrr::ble::BleManager &ble_;
   liftrr::core::RuntimeState &runtime_;

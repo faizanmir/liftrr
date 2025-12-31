@@ -17,6 +17,7 @@ public:
     bool startFileStream(const String &path,
                          size_t size,
                          const String &sessionId);
+    bool sendJsonLine(const String &line);
     void loop();
 
 private:

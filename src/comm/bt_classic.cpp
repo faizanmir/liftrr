@@ -51,7 +51,17 @@ bool BtClassicManager::startFileStream(const String &path,
     stream_.size = size;
     stream_.sessionId = sessionId;
 
-    sendEventLine("session.file.start", sessionId, size);
+    Serial.print("[BT] Stream start: ");
+    Serial.print(path);
+    Serial.print(" bytes=");
+    Serial.println(size);
+
+    return true;
+}
+
+bool BtClassicManager::sendJsonLine(const String &line) {
+    if (!isConnected()) return false;
+    bt_serial_.println(line);
     return true;
 }
 
@@ -78,7 +88,10 @@ void BtClassicManager::loop() {
 
     if (n == 0 || stream_.offset >= stream_.size || !stream_.file.available()) {
         if (stream_.file) stream_.file.close();
-        sendEventLine("session.file.end", stream_.sessionId, stream_.offset);
+        Serial.print("[BT] Stream end: sessionId=");
+        Serial.print(stream_.sessionId);
+        Serial.print(" bytes=");
+        Serial.println(stream_.offset);
         stream_ = BtStreamState{};
     }
 }

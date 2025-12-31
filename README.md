@@ -4,11 +4,10 @@ ESP32 firmware for a lift-tracking device using a VL53L1X ToF distance sensor an
 
 ## Features
 - Relative distance + orientation (roll/pitch/yaw)
-- OLED UI with status, tracking, calibration, idle, dump, and orientation warning screens
+- OLED UI with status, tracking, calibration, dump, and orientation warning screens
 - SD session logging (CSV + NDJSON index)
 - BLE JSON control protocol (time sync, modes, sessions, listing, file request)
 - Bluetooth Classic file streaming for sessions
-- Auto-IDLE after 30s without motion, wake on motion
 - Serial debug commands (single-character + JSON)
 
 ## Hardware
@@ -38,18 +37,18 @@ Set `upload_port` / `monitor_port` in `platformio.ini` if needed.
 ## Runtime modes and UI
 - RUN: live sensing; logging only while a session is active
 - CALIBRATE: shown when IMU or laser are not ready; auto-switches to RUN when ready
-- IDLE: entered after 30s of no motion; any motion returns to RUN
 - DUMP: dedicated screen; sensing/logging paused
 
 If the device is facing LEFT/RIGHT, the tracking screen is replaced by an orientation warning screen.
 
 ## Serial control
 Single-character commands:
-- `m`: cycle RUN -> DUMP -> IDLE
+- `m`: cycle RUN -> DUMP
 - `r`: force RUN
 - `s`: start session (auto-generated ID)
 - `e`: end session
 - `i`: print session index and directory info
+- `x`: clear all session files + index (requires no active session)
 - `d`: print calibration + distance debug
 
 JSON commands (newline-terminated, one per line):
@@ -58,12 +57,14 @@ JSON commands (newline-terminated, one per line):
 {"id":"2","name":"capabilities.get","body":{}}
 {"id":"3","name":"time.sync","body":{"phoneEpochMs":1710000000000}}
 {"id":"4","name":"mode.set","body":{"mode":"RUN"}}
-{"id":"5","name":"session.start","body":{"lift":"deadlift","sessionId":"optional"}}
+{"id":"5","name":"session.start","body":{"lift":"deadlift","phoneEpochMs":1710000000000}}
 {"id":"6","name":"session.end","body":{}}
 {"id":"7","name":"sessions.list","body":{"cursor":0,"limit":15}}
 {"id":"8","name":"session.stream","body":{"sessionId":"1710000000000"}}
+{"id":"9","name":"sessions.clear","body":{}}
 ```
 Use "Newline" line ending in the serial monitor.
+All JSON commands may include `phoneEpochMs` to sync device time.
 
 ## BLE control
 Device name: `LIFTRR` (MTU 185)
@@ -72,18 +73,22 @@ Commands (JSON over BLE):
 ```
 {"id":"1","name":"ping","body":{}}
 {"id":"2","name":"capabilities.get","body":{}}
-{"id":"3","name":"mode.set","body":{"mode":"RUN"}}
-{"id":"4","name":"session.start","body":{"lift":"deadlift","sessionId":"optional"}}
-{"id":"5","name":"session.end","body":{}}
-{"id":"6","name":"sessions.list","body":{"cursor":0,"limit":15}}
-{"id":"7","name":"time.sync","body":{"phoneEpochMs":1710000000000}}
+{"id":"3","name":"time.sync","body":{"phoneEpochMs":1710000000000}}
+{"id":"4","name":"mode.set","body":{"mode":"RUN"}}
+{"id":"5","name":"session.start","body":{"lift":"deadlift","phoneEpochMs":1710000000000}}
+{"id":"6","name":"session.end","body":{}}
+{"id":"7","name":"sessions.list","body":{"cursor":0,"limit":15}}
 {"id":"8","name":"session.stream","body":{"sessionId":"1710000000000"}}
+{"id":"9","name":"sessions.clear","body":{}}
 ```
+All BLE commands may include `phoneEpochMs` to sync device time.
 
 Notes:
 - On BLE connect, the device emits `time.sync.request` and times out after 10s if no reply.
 - `session.start` returns `CALIBRATION_REQUIRED` until IMU + laser are ready; it auto-starts when ready.
+- `session.start` can include `phoneEpochMs` to sync device time before generating the session ID.
 - `session.stream` requests a file transfer over Bluetooth Classic (see below).
+- `sessions.list` sends the JSON response over Bluetooth Classic; BLE response uses `SENT_VIA_BT_CLASSIC`.
 
 Events:
 - `orientation.status` with `{facing, ok}`
@@ -96,14 +101,13 @@ Events:
 When the phone sends `session.stream` over BLE, the device checks the SD index and streams the file over Classic Bluetooth if connected.
 
 Classic stream format:
-- JSON line: `{"event":"session.file.start","sessionId":"...","size":1234}`
-- Raw file bytes (CSV)
-- JSON line: `{"event":"session.file.end","sessionId":"...","size":1234}`
+- Raw file bytes (CSV) only (no metadata framing).
 
 ## Data logging format
 - Active session file: `/sessions/<sessionId>.tmp`
 - Finalized session file: `/sessions/<sessionId>.csv`
 - Index: `/sessions/index.ndjson`
+- Session filename format: `DD-MM-YYYY-hh-mm-ss-LIFT-NAME-LIFTRR.csv`
 
 Session files include comment headers, then CSV rows:
 ```

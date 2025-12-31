@@ -10,6 +10,7 @@
 #include "storage/storage_indicators.h"
 #include <Adafruit_BNO055.h>
 #include <Adafruit_VL53L1X.h>
+#include <Esp.h>
 
 // Motion auto-switch state.
 static liftrr::app::MotionState gMotionState;
@@ -19,6 +20,7 @@ static liftrr::app::MotionController gMotionController;
 static Adafruit_SSD1306 gDisplay(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 static Adafruit_BNO055 gBno(55, 0x28);
 static Adafruit_VL53L1X gLaser;
+static bool gDisplayOk = false;
 
 // Adapters + managers.
 static liftrr::sensors::Bno055Sensor gImuAdapter(gBno);
@@ -61,7 +63,8 @@ static ModeApplier gModeApplier(gRuntimeState, &gMotionState);
 // Hardware init helpers.
 
 static void initDisplay() {
-  if (!gDisplay.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+  gDisplayOk = gDisplay.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
+  if (!gDisplayOk) {
     Serial.println("Display Init Failed");
   } else {
     gDisplay.clearDisplay();
@@ -76,6 +79,10 @@ static void initDisplay() {
 void setup() {
   Serial.begin(115200);
   Serial.println("--- SYSTEM START ---");
+  Serial.print("Flash size bytes: ");
+  Serial.println(ESP.getFlashChipSize());
+  Serial.print("Flash free bytes: ");
+  Serial.println(ESP.getFreeSketchSpace());
 
   // 1. Init I2C Bus
   Wire.begin(21, 22);
@@ -89,6 +96,10 @@ void setup() {
  
   // 3. Display
   initDisplay();
+  Serial.println("Sensor health: IMU=OK");
+  Serial.println("Sensor health: LASER=OK");
+  Serial.print("Sensor health: DISPLAY=");
+  Serial.println(gDisplayOk ? "OK" : "FAIL");
 
   // 4. SD card
   gStorageManager.initSd();

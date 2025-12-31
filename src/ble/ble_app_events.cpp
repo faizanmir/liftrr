@@ -130,6 +130,11 @@ void BleApp::notifyFacing(liftrr::sensors::DeviceFacing facing) {
     static liftrr::sensors::DeviceFacing lastFacing = liftrr::sensors::FACING_DOWN;
     static bool lastOk = true;
 
+    if (!ble_.isConnected()) return;
+    if (!sensors_.isCalibrated() && !storage_.isSessionActive()) {
+        return;
+    }
+
     bool ok = (facing == liftrr::sensors::FACING_UP || facing == liftrr::sensors::FACING_DOWN);
     if (hasLast && facing == lastFacing && ok == lastOk) {
         return;
@@ -138,8 +143,6 @@ void BleApp::notifyFacing(liftrr::sensors::DeviceFacing facing) {
     hasLast = true;
     lastFacing = facing;
     lastOk = ok;
-
-    if (!ble_.isConnected()) return;
 
     const char *facingStr = "UNKNOWN";
     switch (facing) {
